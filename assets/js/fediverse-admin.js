@@ -285,7 +285,7 @@
         var cw = $.trim( this.field( 'spoiler_text' ).val() );
         var vis = this.field( 'visibility' ).find( 'option:selected' ).text();
         var lang = this.field( 'language' ).val() || this.field( 'language' ).find( 'option:first' ).text();
-        this.$composer.find( '.fedi-extras__summary' ).text( ( cw ? 'CW: ' + cw : '—' ) + ' · ' + vis.replace( / \(.*\)$/, '' ) + ' · ' + lang );
+        this.$composer.find( '.fedi-extras__summary' ).text( ( cw ? 'CW: ' + cw : T.noCw ) + ' · ' + vis.replace( / \(.*\)$/, '' ) + ' · ' + lang );
     };
 
     Box.prototype.collect = function () {
@@ -512,6 +512,7 @@
         }
         if ( data.next_slot !== undefined ) {
             this.$el.attr( 'data-next-slot', data.next_slot );
+            this.$el.find( '.fedi-next-slot' ).text( data.next_slot );
         }
         if ( data.note_html !== undefined ) {
             this.$el.find( '.fedi-auto-note' ).replaceWith( data.note_html );

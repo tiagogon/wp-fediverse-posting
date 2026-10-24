@@ -430,6 +430,7 @@ trait Fediverse_Settings_Page_Trait {
                 'nextSlot'      => __( 'Next slot:', 'wp-fediverse-posting' ),
                 'noSlots'       => __( 'No time slots yet: add them under Fediverse → Planner.', 'wp-fediverse-posting' ),
                 'nowBlocked'    => __( 'Publish the post first: its link does not work yet.', 'wp-fediverse-posting' ),
+                'noCw'          => __( 'No content warning', 'wp-fediverse-posting' ),
                 'showMore'      => __( 'Show more', 'wp-fediverse-posting' ),
                 'failed'        => __( 'Request failed. Check your connection and try again.', 'wp-fediverse-posting' ),
                 'view'          => __( 'View', 'wp-fediverse-posting' ),

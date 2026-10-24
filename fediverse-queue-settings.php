@@ -352,8 +352,7 @@ function fediverse_render_box( Fediverse_Queue $queue, $context, $post ) {
                 } elseif ( ! $queue->has_schedule() ) {
                     echo '<span class="fedi-badge fedi-badge--failed">' . esc_html__( 'No time slots', 'wp-fediverse-posting' ) . '</span> ' . esc_html__( 'Add some below so queued posts can go out.', 'wp-fediverse-posting' );
                 } elseif ( $next_slot ) {
-                    /* translators: %s: date and time */
-                    echo esc_html( sprintf( __( 'Next free slot: %s', 'wp-fediverse-posting' ), $next_slot ) );
+                    echo esc_html__( 'Next free slot:', 'wp-fediverse-posting' ) . ' <strong class="fedi-next-slot">' . esc_html( $next_slot ) . '</strong>';
                 }
                 ?>
             </p>
