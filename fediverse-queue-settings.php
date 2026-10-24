@@ -212,15 +212,63 @@ function fediverse_when_text( $row ) {
     return $row['scheduled_at'] ? fediverse_format_local( $row['scheduled_at'] ) : '—';
 }
 
+/**
+ * Text as it will look on the fediverse: escaped, URLs shortened like
+ * Mastodon shows them (30 chars, no scheme), URLs and hashtags highlighted.
+ * Same rule as linkify() in fediverse-admin.js.
+ */
+function fediverse_linkify_text( $text ) {
+    $parts = preg_split( '#(https?://\S+)#u', (string) $text, -1, PREG_SPLIT_DELIM_CAPTURE );
+    $out   = '';
+    foreach ( $parts as $i => $part ) {
+        if ( $i % 2 ) {
+            $shown = preg_replace( '#^https?://(www\.)?#', '', $part );
+            if ( mb_strlen( $shown ) > 30 ) {
+                $shown = mb_substr( $shown, 0, 30 ) . '…';
+            }
+            $out .= '<a class="fedi-link" href="' . esc_url( $part ) . '" target="_blank" rel="noopener" title="' . esc_attr( $part ) . '">' . esc_html( $shown ) . '</a>';
+        } else {
+            $out .= preg_replace( '/(^|\s)(#[\p{L}\p{N}_]+)/u', '$1<span class="fedi-link">$2</span>', esc_html( $part ) );
+        }
+    }
+    return $out;
+}
+
+/** Thumbnails of the images a row will attach, with their alt text. */
+function fediverse_render_row_media( Fediverse_Posting $plugin, $row, $media_ids ) {
+    if ( empty( $media_ids ) ) {
+        return;
+    }
+    echo '<div class="fedi-row__media">';
+    foreach ( $media_ids as $att_id ) {
+        $src = wp_get_attachment_image_src( $att_id, 'thumbnail' );
+        if ( ! $src ) {
+            continue;
+        }
+        $alt = $plugin->alt_text_for( $att_id, $row );
+        printf(
+            '<a class="fedi-thumb%s" href="%s" target="_blank" rel="noopener" title="%s"><img src="%s" alt="%s" width="56" height="56" loading="lazy">%s</a>',
+            '' === $alt ? ' fedi-thumb--no-alt' : '',
+            esc_url( wp_get_attachment_url( $att_id ) ),
+            esc_attr( '' === $alt ? __( 'No alt text', 'wp-fediverse-posting' ) : $alt ),
+            esc_url( $src[0] ),
+            esc_attr( $alt ),
+            '' === $alt ? '<span class="fedi-thumb__flag">' . esc_html__( 'no alt', 'wp-fediverse-posting' ) . '</span>' : ''
+        );
+    }
+    echo '</div>';
+}
+
 function fediverse_render_row( Fediverse_Queue $queue, $row, $context ) {
-    $plugin   = $queue->plugin;
-    $post     = $row['post_id'] ? get_post( $row['post_id'] ) : null;
-    $text     = $plugin->render_template( $row['template'], $post );
-    $snippet  = wp_html_excerpt( $text, 90, '…' );
-    $editable = in_array( $row['status'], array( 'scheduled', 'waiting', 'paused', 'failed' ), true );
-    $sortable = 'planner' === $context && 'queue' === $row['trigger_type'] && 'scheduled' === $row['status'] && 0 === $row['attempts'];
-    $images   = count( $plugin->resolve_media_ids( $row, $post ) );
-    $type     = $row['post_id'] ? Fediverse_Posting::content_type_short( $row['content_type'] ) : ( $images ? Fediverse_Posting::content_type_short( 'gallery' ) : Fediverse_Posting::content_type_short( 'text' ) );
+    $plugin    = $queue->plugin;
+    $post      = $row['post_id'] ? get_post( $row['post_id'] ) : null;
+    $text      = $plugin->render_template( $row['template'], $post );
+    $long      = mb_strlen( $text ) > 200 || substr_count( $text, "\n" ) >= 3;
+    $editable  = in_array( $row['status'], array( 'scheduled', 'waiting', 'paused', 'failed' ), true );
+    $sortable  = 'planner' === $context && 'queue' === $row['trigger_type'] && 'scheduled' === $row['status'] && 0 === $row['attempts'];
+    $media_ids = $plugin->resolve_media_ids( $row, $post );
+    $images    = count( $media_ids );
+    $type      = $row['post_id'] ? Fediverse_Posting::content_type_short( $row['content_type'] ) : ( $images ? Fediverse_Posting::content_type_short( 'gallery' ) : Fediverse_Posting::content_type_short( 'text' ) );
     if ( $images > 1 ) {
         $type .= ' (' . $images . ')';
     }
@@ -234,20 +282,47 @@ function fediverse_render_row( Fediverse_Queue $queue, $row, $context ) {
         <td class="fedi-col-handle"><?php if ( $sortable ) : ?><span class="dashicons dashicons-menu fedi-handle" aria-hidden="true"></span><?php elseif ( 'at' === $row['trigger_type'] && in_array( $row['status'], array( 'scheduled', 'paused' ), true ) ) : ?><span class="dashicons dashicons-admin-post fedi-pin" title="<?php esc_attr_e( 'Fixed date and time: not moved by the queue', 'wp-fediverse-posting' ); ?>"></span><?php endif; ?></td>
         <td class="fedi-col-when"><?php echo esc_html( fediverse_when_text( $row ) ); ?></td>
         <td class="fedi-col-post">
-            <?php if ( 'planner' === $context ) : ?>
-                <?php if ( $post ) : ?>
-                    <a class="fedi-row__title" href="<?php echo esc_url( get_edit_post_link( $post->ID ) ); ?>"><?php echo esc_html( get_the_title( $post ) ?: __( '(no title)', 'wp-fediverse-posting' ) ); ?></a>
-                    <span class="fedi-muted"><?php echo esc_html( get_post_type_object( $post->post_type ) ? get_post_type_object( $post->post_type )->labels->singular_name : $post->post_type ); ?></span>
-                <?php elseif ( $row['post_id'] ) : ?>
-                    <span class="fedi-muted"><?php /* translators: %d: post ID */ echo esc_html( sprintf( __( 'Post #%d (deleted)', 'wp-fediverse-posting' ), $row['post_id'] ) ); ?></span>
-                <?php else : ?>
-                    <span class="fedi-muted"><?php esc_html_e( 'No WordPress post', 'wp-fediverse-posting' ); ?></span>
-                <?php endif; ?>
-            <?php endif; ?>
-            <span class="fedi-row__text"><?php echo esc_html( $snippet ); ?></span>
-            <?php if ( $row['error_message'] && in_array( $row['status'], array( 'failed', 'scheduled' ), true ) ) : ?>
-                <span class="fedi-row__error"><?php echo esc_html( $row['error_message'] ); ?></span>
-            <?php endif; ?>
+            <div class="fedi-row__body">
+                <div class="fedi-row__main">
+                    <?php if ( 'planner' === $context ) : ?>
+                        <div class="fedi-row__meta">
+                            <?php if ( $post ) :
+                                $public    = 'publish' === $post->post_status && '' === $post->post_password;
+                                $view_url  = $public ? get_permalink( $post ) : get_preview_post_link( $post );
+                                $type_obj  = get_post_type_object( $post->post_type ); ?>
+                                <a class="fedi-row__title" href="<?php echo esc_url( $view_url ); ?>" target="_blank" rel="noopener"><?php echo esc_html( get_the_title( $post ) ?: __( '(no title)', 'wp-fediverse-posting' ) ); ?> <span aria-hidden="true">↗</span></a>
+                                <?php if ( ! $public ) : ?><span class="fedi-muted"><?php esc_html_e( '(preview)', 'wp-fediverse-posting' ); ?></span><?php endif; ?>
+                                <span class="fedi-muted">· <?php echo esc_html( $type_obj ? $type_obj->labels->singular_name : $post->post_type ); ?> ·</span>
+                                <a class="fedi-muted" href="<?php echo esc_url( get_edit_post_link( $post->ID ) ); ?>"><?php esc_html_e( 'Edit post', 'wp-fediverse-posting' ); ?></a>
+                            <?php elseif ( $row['post_id'] ) : ?>
+                                <span class="fedi-muted"><?php /* translators: %d: post ID */ echo esc_html( sprintf( __( 'Post #%d (deleted)', 'wp-fediverse-posting' ), $row['post_id'] ) ); ?></span>
+                            <?php else : ?>
+                                <span class="fedi-muted"><?php esc_html_e( 'No WordPress post', 'wp-fediverse-posting' ); ?></span>
+                            <?php endif; ?>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if ( $long ) : ?>
+                        <details class="fedi-row__more">
+                            <summary>
+                                <span class="fedi-row__text"><?php echo fediverse_linkify_text( $text ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside. ?></span>
+                                <span class="fedi-row__toggle fedi-row__toggle--show"><?php esc_html_e( 'Show all', 'wp-fediverse-posting' ); ?></span>
+                                <span class="fedi-row__toggle fedi-row__toggle--hide"><?php esc_html_e( 'Show less', 'wp-fediverse-posting' ); ?></span>
+                            </summary>
+                        </details>
+                    <?php else : ?>
+                        <div class="fedi-row__text"><?php echo fediverse_linkify_text( $text ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside. ?></div>
+                    <?php endif; ?>
+
+                    <?php if ( '' !== $row['spoiler_text'] ) : ?>
+                        <span class="fedi-row__cw"><?php /* translators: %s: content warning */ echo esc_html( sprintf( __( 'CW: %s', 'wp-fediverse-posting' ), $row['spoiler_text'] ) ); ?></span>
+                    <?php endif; ?>
+                    <?php if ( $row['error_message'] && in_array( $row['status'], array( 'failed', 'scheduled' ), true ) ) : ?>
+                        <span class="fedi-row__error"><?php echo esc_html( $row['error_message'] ); ?></span>
+                    <?php endif; ?>
+                </div>
+                <?php fediverse_render_row_media( $plugin, $row, $media_ids ); ?>
+            </div>
         </td>
         <td class="fedi-col-type"><?php echo esc_html( $type ); ?></td>
         <td class="fedi-col-status"><?php echo fediverse_status_badge( $row ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside. ?></td>

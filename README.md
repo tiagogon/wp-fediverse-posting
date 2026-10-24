@@ -3,7 +3,7 @@
 Share your WordPress posts on your Mastodon account, or any account on a server that speaks the Mastodon API (Mastodon, GoToSocial, Akkoma, Pleroma). No ActivityPub server inside WordPress, no ACF, no theme dependency: the plugin posts to the account you already have.
 
 - **Post now**, **when the post is published** (including scheduled posts), on the **next queue slot** of a weekly schedule, or at a **fixed date and time**.
-- **A Planner** that lists everything, lets you drag queued posts into a new order, and writes posts that have no WordPress post behind them.
+- **A Planner** that lists everything, lets you drag queued posts into a new order, and writes posts that have no WordPress post behind them. Each row shows the text exactly as it will be sent, thumbnails of the attached images (flagged when they lack alt text) and a link to view the post, or its preview when it is not public.
 - **Content types**: text + link + featured image (default), text + link, text + link + gallery, text only.
 - **Templates with placeholders**, filled in when the post goes out: `[post-title] [post-url] [post-excerpt] [site-name]`, plus hashtags from any taxonomy: `[tags]`, `[categories]`, `[tax-<slug>]`.
 - **Alt text** from the Media Library, editable per post, with a warning when an image has none.

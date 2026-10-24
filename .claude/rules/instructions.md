@@ -28,7 +28,7 @@ This plugin is public and must work on any WordPress site: **no ACF, no theme co
 - **Not connected ≠ failed**: `send_row()` returns early without touching the row when no account is connected.
 - **Templates are rendered at send time** (and for the preview), never stored rendered.
 - **Text is stored as typed**: `clean_text()` (unslash, UTF-8 check, newline normalisation). Never `sanitize_textarea_field()` — it turns `<` into `&lt;`. Escape on output.
-- **Rows are rendered only in PHP** (`fediverse_render_list()`), returned as `html` by every AJAX action.
+- **Rows are rendered only in PHP** (`fediverse_render_list()`), returned as `html` by every AJAX action. A row shows the full rendered text (`fediverse_linkify_text()`, same shortening rule as `linkify()` in the JS; clamped to 4 lines, `<details>` "Show all" for long ones), thumbnails of `resolve_media_ids()` with a "no alt" flag, and in the Planner a view link (permalink, or `get_preview_post_link()` when not public) plus "Edit post".
 - **Meta box**: block-editor compatible, everything over AJAX. Radios need a `name` to group; they get unique names the plugin never reads.
 - **Queue order** is `position`; only `trigger_type = 'queue'` rows with `attempts = 0` are re-slotted by `recalculate_schedule()`. Rows in a retry back-off keep their time; fixed-time rows (`at`) block their moment.
 - `get_post( 0 )` returns the global post: always `$id ? get_post( $id ) : null`.
