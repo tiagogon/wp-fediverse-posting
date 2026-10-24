@@ -232,7 +232,7 @@ trait Fediverse_Queue_Ajax_Trait {
         $warnings = array();
         if ( $unknown ) {
             /* translators: %s: list of placeholders */
-            $warnings[] = sprintf( __( 'Unknown placeholders, sent as typed: %s', 'wp-fediverse-posting' ), implode( ' ', array_unique( $unknown ) ) );
+            $warnings[] = sprintf( __( 'Check the spelling of: %s (unknown placeholders are sent as typed; unknown modifiers are ignored).', 'wp-fediverse-posting' ), implode( ' ', array_unique( $unknown ) ) );
         }
         if ( $post && ! self::post_is_public( $post ) && false !== strpos( $data['template'], '[post-url]' ) ) {
             $warnings[] = __( 'The post is not published yet, so its link does not work. "Now" is off until it is.', 'wp-fediverse-posting' );

@@ -12,7 +12,9 @@
  *   terms skipped (Mastodon does not link them). Filter per tag:
  *   fediverse_posting_hashtag( $tag, $term, $taxonomy ) — return '' to skip.
  * - Modifiers: [tax-medium:deepest] (most specific terms only),
- *   [tax-medium:top] (root terms only), [tax-places:max=3]; combinable.
+ *   [tax-medium:top] (root terms only), [tax-places:max=3],
+ *   [tax-medium:only=iPhone] / [tax-medium:not=iPhone,Screenshot] (names or
+ *   slugs, applied first); combinable in any order.
  * - One "seen" list per render: no hashtag appears twice in a text, counting
  *   hashtags typed literally. Settings "Never use as hashtags" drops terms.
  * - Standalone rows (post_id 0) only get [site-name]; post placeholders go blank.
@@ -185,6 +187,21 @@ trait Fediverse_Content_Trait {
             return '';
         }
 
+        // only= / not=: pick terms by name or slug, before levels are worked out.
+        foreach ( array( 'only', 'not' ) as $mode ) {
+            if ( empty( $mods[ $mode ] ) ) {
+                continue;
+            }
+            $list  = array_flip( $mods[ $mode ] );
+            $terms = array_values( array_filter( $terms, function ( $t ) use ( $list, $mode ) {
+                $hit = isset( $list[ mb_strtolower( $t->name ) ] ) || isset( $list[ mb_strtolower( $t->slug ) ] );
+                return 'only' === $mode ? $hit : ! $hit;
+            } ) );
+        }
+        if ( empty( $terms ) ) {
+            return '';
+        }
+
         if ( is_taxonomy_hierarchical( $taxonomy ) && ( ! empty( $mods['deepest'] ) || ! empty( $mods['top'] ) ) ) {
             if ( ! empty( $mods['deepest'] ) ) {
                 $depths = array();
@@ -231,14 +248,23 @@ trait Fediverse_Content_Trait {
         return implode( ' ', $tags );
     }
 
-    /** "deepest:max=2" → array( 'deepest' => true, 'max' => 2 ). */
+    /**
+     * ":deepest:not=iPhone,Screenshot:max=2" → array( 'deepest' => true,
+     * 'not' => array( 'iphone', 'screenshot' ), 'max' => 2 ). Term lists are
+     * names or slugs, lowercased. Unrecognised parts land in 'unknown'.
+     */
     public static function parse_modifiers( $raw ) {
         $mods = array();
-        foreach ( array_filter( explode( ':', strtolower( (string) $raw ) ) ) as $part ) {
-            if ( 'deepest' === $part || 'top' === $part ) {
-                $mods[ $part ] = true;
-            } elseif ( preg_match( '/^max=(\d+)$/', $part, $m ) ) {
+        foreach ( array_filter( array_map( 'trim', explode( ':', (string) $raw ) ), 'strlen' ) as $part ) {
+            $lower = mb_strtolower( $part );
+            if ( 'deepest' === $lower || 'top' === $lower ) {
+                $mods[ $lower ] = true;
+            } elseif ( preg_match( '/^max=(\d+)$/', $lower, $m ) ) {
                 $mods['max'] = (int) $m[1];
+            } elseif ( preg_match( '/^(only|not)=(.+)$/su', $lower, $m ) ) {
+                $mods[ $m[1] ] = array_values( array_filter( array_map( 'trim', explode( ',', $m[2] ) ), 'strlen' ) );
+            } else {
+                $mods['unknown'][] = $part;
             }
         }
         return $mods;
@@ -275,7 +301,7 @@ trait Fediverse_Content_Trait {
             }
         }
 
-        $text = preg_replace_callback( '/\[([a-z0-9_-]+)((?::[a-z0-9=_-]+)*)\]/i', function ( $m ) use ( $post, $self, &$unknown, &$seen ) {
+        $text = preg_replace_callback( '/\[([a-z0-9_-]+)((?::[^\]:]+)*)\]/iu', function ( $m ) use ( $post, $self, &$unknown, &$seen ) {
             $token = strtolower( $m[1] );
             switch ( $token ) {
                 case 'site-name':
@@ -293,7 +319,12 @@ trait Fediverse_Content_Trait {
             }
             $taxonomy = Fediverse_Posting::taxonomy_from_placeholder( $token );
             if ( '' !== $taxonomy && taxonomy_exists( $taxonomy ) ) {
-                return $post ? $self->hashtags_for( $post, $taxonomy, Fediverse_Posting::parse_modifiers( $m[2] ), $seen ) : '';
+                $mods = Fediverse_Posting::parse_modifiers( $m[2] );
+                if ( ! empty( $mods['unknown'] ) ) {
+                    // Flag the typo in the preview, still render the tags.
+                    $unknown[] = $m[0];
+                }
+                return $post ? $self->hashtags_for( $post, $taxonomy, $mods, $seen ) : '';
             }
             $unknown[] = $m[0];
             return $m[0];

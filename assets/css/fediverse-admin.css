@@ -149,6 +149,8 @@ body.wp-admin.dark-mode {
 }
 .fedi-chip:hover, .fedi-chip:focus { border-color: var(--fedi-accent); color: var(--fedi-accent); }
 .fedi-chip--tag { background: var(--fedi-accent-bg); }
+.fedi-chips__hint { margin: 4px 0 0 !important; font-size: 12px; }
+.fedi-chips__hint code { font-size: 11px; }
 
 /* ── Settings: text per post type ───────────────────────────────────── */
 

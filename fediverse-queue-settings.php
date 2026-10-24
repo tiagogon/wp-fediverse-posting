@@ -137,6 +137,12 @@ function fediverse_render_placeholder_chips( Fediverse_Posting $plugin, $target_
         echo '<button type="button" class="fedi-chip" data-insert="[site-name]">[site-name]</button>';
     }
     echo '</div>';
+    if ( ! $standalone ) {
+        echo '<p class="description fedi-chips__hint">' . wp_kses(
+            __( 'Choose terms by adding <code>:only=</code> or <code>:not=</code> with names, e.g. <code>[tax-medium:not=iPhone,Screenshot]</code> or <code>[tax-medium:only=iPhone]</code>. Also <code>:deepest</code>, <code>:top</code>, <code>:max=2</code>.', 'wp-fediverse-posting' ),
+            array( 'code' => array() )
+        ) . '</p>';
+    }
 }
 
 /** Weekly slot editor (Planner, inside the options form). */
