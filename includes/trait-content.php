@@ -139,7 +139,7 @@ trait Fediverse_Content_Trait {
         );
     }
 
-    /** "Berlin Wall" → "BerlinWall"; "iPhone" stays; "2016" → '' (not a hashtag). */
+    /** "Berlin Wall" → "BerlinWall"; "iPhone" stays; "35 mm" → "35mm"; "2016" → '' (not a hashtag). */
     public static function hashtagify( $name ) {
         $name  = wp_specialchars_decode( (string) $name, ENT_QUOTES );
         $words = preg_split( '/[^\p{L}\p{N}_]+/u', $name, -1, PREG_SPLIT_NO_EMPTY );
@@ -147,9 +147,14 @@ trait Fediverse_Content_Trait {
             return '';
         }
         if ( count( $words ) > 1 ) {
-            $words = array_map( function ( $w ) {
-                return mb_strtoupper( mb_substr( $w, 0, 1 ) ) . mb_substr( $w, 1 );
-            }, $words );
+            // CamelCase, except a word right after a number keeps its case:
+            // "35 mm" → "35mm", not "35Mm".
+            foreach ( $words as $i => $w ) {
+                if ( $i > 0 && ctype_digit( $words[ $i - 1 ] ) ) {
+                    continue;
+                }
+                $words[ $i ] = mb_strtoupper( mb_substr( $w, 0, 1 ) ) . mb_substr( $w, 1 );
+            }
         }
         $tag = implode( '', $words );
         return preg_match( '/\p{L}/u', $tag ) ? $tag : '';
