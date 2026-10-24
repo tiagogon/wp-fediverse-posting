@@ -173,7 +173,7 @@ class Fediverse_Queue {
 
         $sql = "SELECT * FROM {$table} WHERE " . implode( ' AND ', $where )
              . " ORDER BY FIELD(status,'processing','scheduled','waiting','failed','paused','published','removed'),"
-             . ' scheduled_at IS NULL, scheduled_at ASC, published_at DESC, id DESC';
+             . ' scheduled_at IS NULL, scheduled_at ASC, position ASC, published_at DESC, id DESC';
         $sql = $vals ? $wpdb->prepare( $sql, $vals ) : $sql; // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         return array_map( array( __CLASS__, 'hydrate' ), (array) $wpdb->get_results( $sql ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
