@@ -208,12 +208,22 @@ trait Fediverse_Settings_Page_Trait {
         echo '<p class="description">' . esc_html__( 'Off pauses the queue and fixed-time posts. "Now" and "When published" always go out.', 'wp-fediverse-posting' ) . '</p>';
     }
 
-    /** Keep the keys the submitting page does not own. */
+    /**
+     * Keep the keys the submitting page does not own.
+     *
+     * register_setting() runs this on EVERY update_option() of the option,
+     * not only on form posts. Internal writes (update_settings(): the OAuth
+     * token, the account) carry no `_source_page` and pass through as given;
+     * otherwise they would be replaced by the stored values and lost.
+     */
     public function sanitize_settings( $input ) {
+        $input = is_array( $input ) ? $input : array();
+        if ( ! isset( $input['_source_page'] ) ) {
+            return $input;
+        }
         $existing = self::get_settings();
-        $input    = is_array( $input ) ? $input : array();
         $clean    = $existing;
-        $source   = isset( $input['_source_page'] ) ? sanitize_key( $input['_source_page'] ) : '';
+        $source   = sanitize_key( $input['_source_page'] );
 
         if ( 'planner' === $source ) {
             $clean['queue_enabled']  = empty( $input['queue_enabled'] ) ? 0 : 1;
