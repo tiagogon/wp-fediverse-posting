@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Logs (generated at runtime)
+*.log
+
+# Local Claude config (never publish)
+CLAUDE.local.md
+.claude/settings.local.json
