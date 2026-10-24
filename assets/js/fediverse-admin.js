@@ -71,6 +71,31 @@
         $( this ).closest( '.fedi-slot' ).remove();
     } );
 
+    // ── Text per post type (Settings) ──────────────────────────────────────
+
+    function syncTypeTemplate( $details ) {
+        var own = $.trim( $details.find( 'textarea' ).val() ) !== '';
+        var $state = $details.find( '.fedi-type-template__state' );
+        $details.attr( 'data-own', own ? '1' : null );
+        $state.text( $state.data( own ? 'own-label' : 'default-label' ) );
+    }
+
+    $( document ).on( 'input', '.fedi-type-template textarea', function () {
+        syncTypeTemplate( $( this ).closest( '.fedi-type-template' ) );
+    } );
+
+    $( document ).on( 'click', '[data-fedi-copy-default]', function () {
+        var target = document.getElementById( $( this ).data( 'fedi-copy-default' ) );
+        target.value = $( '#fedi-default-template' ).val();
+        $( target ).trigger( 'input' ).trigger( 'focus' );
+    } );
+
+    $( document ).on( 'click', '[data-fedi-clear-template]', function () {
+        var target = document.getElementById( $( this ).data( 'fedi-clear-template' ) );
+        target.value = '';
+        $( target ).trigger( 'input' );
+    } );
+
     // ── Clear log (Settings) ───────────────────────────────────────────────
 
     $( document ).on( 'click', '[data-fedi-clear-log]', function () {
@@ -167,6 +192,11 @@
             self.schedulePreview();
         } );
 
+        this.$composer.on( 'click', '[data-fedi-use-default]', function () {
+            self.field( 'template' ).val( C.defaults.baseTemplate ).trigger( 'input' );
+            self.$composer.find( '.fedi-template-source' ).prop( 'hidden', true );
+        } );
+
         this.$composer.on( 'click', '[data-fedi-cancel]', function () {
             self.close();
         } );
@@ -222,6 +252,12 @@
         this.field( 'sensitive' ).prop( 'checked', row ? !! parseInt( row.is_sensitive, 10 ) : false );
         this.radio( 'when', when );
         this.field( 'at' ).val( row && row.at_local ? row.at_local : '' );
+
+        // Where a new post's starting text came from (a post type's own text).
+        var from = ! row && ! this.standalone && this.context === 'editor' ? C.defaults.templateFrom : '';
+        this.$composer.find( '.fedi-template-source' ).prop( 'hidden', ! from );
+        this.$composer.find( '.fedi-template-source__text' ).text( from );
+        this.$composer.find( '[data-fedi-use-default]' ).text( T.useDefault );
 
         this.$composer.find( '.fedi-images' ).empty();
         this.$composer.find( '.fedi-composer__msg' ).text( '' );

@@ -498,6 +498,7 @@ function fediverse_render_composer( Fediverse_Queue $queue, $context, $post ) {
                     <label for="<?php echo esc_attr( $uid ); ?>-text" class="fedi-label"><?php esc_html_e( 'Text', 'wp-fediverse-posting' ); ?></label>
                     <textarea id="<?php echo esc_attr( $uid ); ?>-text" rows="4" class="large-text fedi-template-input" data-field="template"></textarea>
                     <div class="fedi-counter" aria-live="polite"></div>
+                    <p class="fedi-template-source description" hidden><span class="fedi-template-source__text"></span> · <button type="button" class="button-link" data-fedi-use-default></button></p>
                     <div class="fedi-only-post"><?php fediverse_render_placeholder_chips( $plugin, $uid . '-text', $post ? array( $post->post_type ) : null ); ?></div>
                     <div class="fedi-only-standalone"><?php fediverse_render_placeholder_chips( $plugin, $uid . '-text', null, true ); ?></div>
                 </div>

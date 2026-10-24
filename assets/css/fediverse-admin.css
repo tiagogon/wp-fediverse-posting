@@ -150,6 +150,20 @@ body.wp-admin.dark-mode {
 .fedi-chip:hover, .fedi-chip:focus { border-color: var(--fedi-accent); color: var(--fedi-accent); }
 .fedi-chip--tag { background: var(--fedi-accent-bg); }
 
+/* ── Settings: text per post type ───────────────────────────────────── */
+
+.fedi-type-templates { max-width: 900px; border: 1px solid var(--fedi-border-soft); border-radius: 4px; background: var(--fedi-bg); }
+.fedi-type-template { border-top: 1px solid var(--fedi-border-soft); padding: 0 12px; }
+.fedi-type-template:first-child { border-top: 0; }
+.fedi-type-template summary { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; cursor: pointer; }
+.fedi-type-template__name { font-weight: 600; }
+.fedi-type-template__state { color: var(--fedi-text-muted); font-size: 12px; }
+.fedi-type-template[data-own="1"] .fedi-type-template__state { color: var(--fedi-accent); }
+.fedi-type-template[open] { padding-bottom: 12px; }
+.fedi-type-template__actions { margin: 8px 0 0; display: flex; gap: 12px; align-items: center; }
+.fedi-type-templates__intro { margin-top: 0 !important; }
+.fedi-template-source { margin: 2px 0 0 !important; }
+
 /* ── Planner / editor list ──────────────────────────────────────────── */
 
 .fedi-summary { margin: 12px 0; }

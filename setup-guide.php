@@ -20,6 +20,9 @@ if ( ! defined( 'ABSPATH' ) ) {
         <li><code>[post-title]</code>, <code>[post-url]</code>, <code>[post-excerpt]</code>, <code>[site-name]</code></li>
         <li><?php echo wp_kses( __( '<code>[tags]</code> and <code>[categories]</code> become hashtags; any custom taxonomy works as <code>[tax-slug]</code>, e.g. <code>[tax-places]</code>.', 'wp-fediverse-posting' ), array( 'code' => array() ) ); ?></li>
         <li><?php esc_html_e( 'Multi-word terms become CamelCase hashtags (#BerlinWall) so screen readers read them well. Number-only terms are skipped.', 'wp-fediverse-posting' ); ?></li>
+        <li><?php echo wp_kses( __( 'For hierarchical taxonomies, <code>[tax-medium:deepest]</code> gives only the most specific terms and <code>[tax-medium:top]</code> only the top level. <code>[tax-places:max=3]</code> keeps at most three. Modifiers combine.', 'wp-fediverse-posting' ), array( 'code' => array() ) ); ?></li>
+        <li><?php esc_html_e( 'No hashtag appears twice in one post, counting the ones you type yourself. Terms listed under "Never use as hashtags" are always left out.', 'wp-fediverse-posting' ); ?></li>
+        <li><?php esc_html_e( 'Under "Text per post type" each post type can start from its own text; leave it empty to use the default.', 'wp-fediverse-posting' ); ?></li>
     </ul>
 
     <h3><?php esc_html_e( '3. Share', 'wp-fediverse-posting' ); ?></h3>

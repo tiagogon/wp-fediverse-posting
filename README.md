@@ -6,6 +6,9 @@ Share your WordPress posts on your Mastodon account, or any account on a server 
 - **A Planner** that lists everything, lets you drag queued posts into a new order, and writes posts that have no WordPress post behind them. Each row shows the text exactly as it will be sent, thumbnails of the attached images (flagged when they lack alt text) and a link to view the post, or its preview when it is not public.
 - **Content types**: text + link + featured image (default), text + link, text + link + gallery, text only.
 - **Templates with placeholders**, filled in when the post goes out: `[post-title] [post-url] [post-excerpt] [site-name]`, plus hashtags from any taxonomy: `[tags]`, `[categories]`, `[tax-<slug>]`.
+  - Modifiers pick which terms: `:deepest` (most specific level of a hierarchical taxonomy), `:top` (top level), `:max=N`. They combine: `[tax-medium:deepest:max=1]`.
+  - A hashtag never appears twice in one post, including ones typed literally (`#Film`). Terms listed under **Never use as hashtags** are left out.
+  - Each post type can have its **own default text**; empty means the general default.
 - **Alt text** from the Media Library, editable per post, with a warning when an image has none.
 - **Content warnings**, visibility, and language per post.
 - **A live preview** that looks like the post on the fediverse, and a character counter that uses the server's own limit.

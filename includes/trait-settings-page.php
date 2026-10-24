@@ -70,6 +70,8 @@ trait Fediverse_Settings_Page_Trait {
             echo '<p>' . esc_html__( 'Every new fediverse post starts from these. You can change them per post in the composer.', 'wp-fediverse-posting' ) . '</p>';
         }, $page );
         add_settings_field( 'fedi_template', __( 'Text', 'wp-fediverse-posting' ), array( $this, 'field_template' ), $page, 'fedi_defaults' );
+        add_settings_field( 'fedi_exclude', __( 'Never use as hashtags', 'wp-fediverse-posting' ), array( $this, 'field_exclude' ), $page, 'fedi_defaults' );
+        add_settings_field( 'fedi_type_templates', __( 'Text per post type', 'wp-fediverse-posting' ), array( $this, 'field_type_templates' ), $page, 'fedi_defaults' );
         add_settings_field( 'fedi_content_type', __( 'Content', 'wp-fediverse-posting' ), array( $this, 'field_content_type' ), $page, 'fedi_defaults' );
         add_settings_field( 'fedi_visibility', __( 'Visibility', 'wp-fediverse-posting' ), array( $this, 'field_visibility' ), $page, 'fedi_defaults' );
         add_settings_field( 'fedi_language', __( 'Language', 'wp-fediverse-posting' ), array( $this, 'field_language' ), $page, 'fedi_defaults' );
@@ -118,6 +120,50 @@ trait Fediverse_Settings_Page_Trait {
             esc_textarea( (string) $this->get_setting( 'default_template' ) )
         );
         fediverse_render_placeholder_chips( $this, 'fedi-default-template' );
+    }
+
+    public function field_exclude() {
+        printf(
+            '<input type="text" name="%s" value="%s" class="large-text" placeholder="%s">',
+            $this->field_name( 'hashtag_exclude' ), // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+            esc_attr( implode( ', ', (array) $this->get_setting( 'hashtag_exclude' ) ) ),
+            esc_attr__( 'e.g. Featured, Uncategorized', 'wp-fediverse-posting' )
+        );
+        echo '<p class="description">' . esc_html__( 'Comma-separated term names. They are left out of every hashtag line, in every post type.', 'wp-fediverse-posting' ) . '</p>';
+    }
+
+    /** One folded text box per enabled post type; empty = use the default text. */
+    public function field_type_templates() {
+        $types = $this->post_types();
+        if ( empty( $types ) ) {
+            echo '<p class="description">' . esc_html__( 'Tick some post types above first.', 'wp-fediverse-posting' ) . '</p>';
+            return;
+        }
+        echo '<p class="description fedi-type-templates__intro">' . esc_html__( 'Optional. Leave a box empty to use the default text above.', 'wp-fediverse-posting' ) . '</p>';
+        echo '<div class="fedi-type-templates">';
+        foreach ( $types as $pt ) {
+            $obj = get_post_type_object( $pt );
+            if ( ! $obj ) {
+                continue;
+            }
+            $own = $this->own_template_for( $pt );
+            $id  = 'fedi-type-template-' . sanitize_html_class( $pt );
+            ?>
+            <details class="fedi-type-template" <?php echo '' !== $own ? 'data-own="1"' : ''; ?>>
+                <summary>
+                    <span class="fedi-type-template__name"><?php echo esc_html( $obj->labels->name ); ?></span>
+                    <span class="fedi-type-template__state" data-own-label="<?php esc_attr_e( 'own text', 'wp-fediverse-posting' ); ?>" data-default-label="<?php esc_attr_e( 'uses the default', 'wp-fediverse-posting' ); ?>"><?php echo '' !== $own ? esc_html__( 'own text', 'wp-fediverse-posting' ) : esc_html__( 'uses the default', 'wp-fediverse-posting' ); ?></span>
+                </summary>
+                <textarea name="<?php echo esc_attr( self::OPTION_NAME . '[post_type_templates][' . $pt . ']' ); ?>" id="<?php echo esc_attr( $id ); ?>" rows="3" class="large-text fedi-template-input"><?php echo esc_textarea( $own ); ?></textarea>
+                <?php fediverse_render_placeholder_chips( $this, $id, array( $pt ) ); ?>
+                <p class="fedi-type-template__actions">
+                    <button type="button" class="button button-small" data-fedi-copy-default="<?php echo esc_attr( $id ); ?>"><?php esc_html_e( 'Copy the default text', 'wp-fediverse-posting' ); ?></button>
+                    <button type="button" class="button-link" data-fedi-clear-template="<?php echo esc_attr( $id ); ?>"><?php esc_html_e( 'Clear: use the default', 'wp-fediverse-posting' ); ?></button>
+                </p>
+            </details>
+            <?php
+        }
+        echo '</div>';
     }
 
     public function field_content_type() {
@@ -246,6 +292,26 @@ trait Fediverse_Settings_Page_Trait {
             $clean['post_types'] = array_values( array_intersect( array_map( 'sanitize_key', isset( $input['post_types'] ) ? (array) $input['post_types'] : array() ), array_keys( $valid_types ) ) );
 
             $clean['default_template'] = isset( $input['default_template'] ) ? Fediverse_Queue::clean_text( $input['default_template'] ) : self::DEFAULT_TEMPLATE;
+
+            // Boxes are only shown for ticked types: keep the stored text of the others.
+            $templates = (array) $existing['post_type_templates'];
+            if ( isset( $input['post_type_templates'] ) && is_array( $input['post_type_templates'] ) ) {
+                foreach ( $input['post_type_templates'] as $pt => $text ) {
+                    $pt   = sanitize_key( $pt );
+                    $text = trim( Fediverse_Queue::clean_text( $text ) );
+                    if ( '' === $text ) {
+                        unset( $templates[ $pt ] );
+                    } elseif ( post_type_exists( $pt ) ) {
+                        $templates[ $pt ] = $text;
+                    }
+                }
+            }
+            $clean['post_type_templates'] = $templates;
+
+            $exclude                  = isset( $input['hashtag_exclude'] ) ? explode( ',', wp_unslash( (string) $input['hashtag_exclude'] ) ) : array();
+            $clean['hashtag_exclude'] = array_values( array_unique( array_filter( array_map( function ( $x ) {
+                return trim( sanitize_text_field( $x ) );
+            }, $exclude ) ) ) );
 
             $type                          = isset( $input['default_content_type'] ) ? sanitize_key( $input['default_content_type'] ) : '';
             $clean['default_content_type'] = array_key_exists( $type, self::content_types() ) ? $type : self::DEFAULT_CONTENT_TYPE;
@@ -412,7 +478,12 @@ trait Fediverse_Settings_Page_Trait {
                 'avatar' => isset( $account['avatar'] ) ? $account['avatar'] : '',
             ),
             'defaults'   => array(
-                'template'     => (string) $this->get_setting( 'default_template' ),
+                'template'     => $post ? $this->default_template_for( $post->post_type ) : (string) $this->get_setting( 'default_template' ),
+                'baseTemplate' => (string) $this->get_setting( 'default_template' ),
+                'templateFrom' => ( $post && '' !== $this->own_template_for( $post->post_type ) && get_post_type_object( $post->post_type ) )
+                    /* translators: %s: post type name */
+                    ? sprintf( __( 'From the %s text in Settings', 'wp-fediverse-posting' ), get_post_type_object( $post->post_type )->labels->name )
+                    : '',
                 'content_type' => (string) $this->get_setting( 'default_content_type' ),
                 'visibility'   => (string) $this->get_setting( 'default_visibility' ),
                 'language'     => '',
@@ -440,6 +511,7 @@ trait Fediverse_Settings_Page_Trait {
                 'nextSlot'      => __( 'Next slot:', 'wp-fediverse-posting' ),
                 'noSlots'       => __( 'No time slots yet: add them under Fediverse → Planner.', 'wp-fediverse-posting' ),
                 'nowBlocked'    => __( 'Publish the post first: its link does not work yet.', 'wp-fediverse-posting' ),
+                'useDefault'    => __( 'Use the default text', 'wp-fediverse-posting' ),
                 'noCw'          => __( 'No content warning', 'wp-fediverse-posting' ),
                 'showMore'      => __( 'Show more', 'wp-fediverse-posting' ),
                 'failed'        => __( 'Request failed. Check your connection and try again.', 'wp-fediverse-posting' ),

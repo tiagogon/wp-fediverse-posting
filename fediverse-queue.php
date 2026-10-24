@@ -613,7 +613,7 @@ class Fediverse_Queue {
         return array(
             'post_id'      => (int) $post_id,
             'content_type' => array_key_exists( $type, Fediverse_Posting::content_types() ) ? $type : Fediverse_Posting::DEFAULT_CONTENT_TYPE,
-            'template'     => (string) $this->plugin->get_setting( 'default_template' ),
+            'template'     => $this->plugin->default_template_for( (string) get_post_type( $post_id ) ),
             'visibility'   => (string) $this->plugin->get_setting( 'default_visibility' ),
             'language'     => '',
             'trigger_type' => $trigger,

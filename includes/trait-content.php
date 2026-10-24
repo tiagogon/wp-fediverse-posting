@@ -11,6 +11,10 @@
  *   by screen readers), single words as typed, accents kept, numbers-only
  *   terms skipped (Mastodon does not link them). Filter per tag:
  *   fediverse_posting_hashtag( $tag, $term, $taxonomy ) — return '' to skip.
+ * - Modifiers: [tax-medium:deepest] (most specific terms only),
+ *   [tax-medium:top] (root terms only), [tax-places:max=3]; combinable.
+ * - One "seen" list per render: no hashtag appears twice in a text, counting
+ *   hashtags typed literally. Settings "Never use as hashtags" drops terms.
  * - Standalone rows (post_id 0) only get [site-name]; post placeholders go blank.
  *
  * Content types: text | link | link_image (default) | gallery.
@@ -108,7 +112,14 @@ trait Fediverse_Content_Trait {
                 if ( 'post_format' === $tax->name || ! $tax->show_ui ) {
                     continue;
                 }
-                $out[ self::taxonomy_placeholder( $tax->name ) ] = $tax->labels->name;
+                $token         = self::taxonomy_placeholder( $tax->name );
+                $out[ $token ] = $tax->labels->name;
+                if ( $tax->hierarchical ) {
+                    /* translators: %s: taxonomy name */
+                    $out[ $token . ':deepest' ] = sprintf( __( '%s: most specific level only', 'wp-fediverse-posting' ), $tax->labels->name );
+                    /* translators: %s: taxonomy name */
+                    $out[ $token . ':top' ] = sprintf( __( '%s: top level only', 'wp-fediverse-posting' ), $tax->labels->name );
+                }
             }
         }
         if ( ! isset( $out['tags'] ) ) {
@@ -142,8 +153,30 @@ trait Fediverse_Content_Trait {
         return preg_match( '/\p{L}/u', $tag ) ? $tag : '';
     }
 
-    /** "#A #B" for one taxonomy on one post. */
-    public function hashtags_for( $post, $taxonomy ) {
+    /** Hashtag exclusions from Settings, lowercased, with and without spaces. */
+    public function hashtag_exclusions() {
+        $out = array();
+        foreach ( (array) $this->get_setting( 'hashtag_exclude' ) as $name ) {
+            $name = mb_strtolower( trim( (string) $name ) );
+            if ( '' !== $name ) {
+                $out[ $name ]                                    = true;
+                $out[ mb_strtolower( self::hashtagify( $name ) ) ] = true;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Hashtags for one taxonomy on one post, e.g. "#Berlin #Favacal".
+     *
+     * @param WP_Post $post
+     * @param string  $taxonomy
+     * @param array   $mods     deepest (bool), top (bool), max (int): from
+     *                          placeholder modifiers like [tax-medium:deepest:max=1].
+     * @param array   $seen     Lowercase tags already in the text; updated.
+     *                          Shared across one render so no tag appears twice.
+     */
+    public function hashtags_for( $post, $taxonomy, $mods = array(), &$seen = array() ) {
         if ( ! taxonomy_exists( $taxonomy ) ) {
             return '';
         }
@@ -151,15 +184,64 @@ trait Fediverse_Content_Trait {
         if ( empty( $terms ) || is_wp_error( $terms ) ) {
             return '';
         }
-        $tags = array();
+
+        if ( is_taxonomy_hierarchical( $taxonomy ) && ( ! empty( $mods['deepest'] ) || ! empty( $mods['top'] ) ) ) {
+            if ( ! empty( $mods['deepest'] ) ) {
+                $depths = array();
+                foreach ( $terms as $term ) {
+                    $depths[ $term->term_id ] = count( get_ancestors( $term->term_id, $taxonomy, 'taxonomy' ) );
+                }
+                $max   = max( $depths );
+                $terms = array_values( array_filter( $terms, function ( $t ) use ( $depths, $max ) {
+                    return $depths[ $t->term_id ] === $max;
+                } ) );
+            } else {
+                $roots = array();
+                foreach ( $terms as $term ) {
+                    $ancestors = get_ancestors( $term->term_id, $taxonomy, 'taxonomy' );
+                    $root_id   = $ancestors ? (int) end( $ancestors ) : $term->term_id;
+                    $root      = $root_id === $term->term_id ? $term : get_term( $root_id, $taxonomy );
+                    if ( $root && ! is_wp_error( $root ) ) {
+                        $roots[ $root->term_id ] = $root;
+                    }
+                }
+                $terms = array_values( $roots );
+            }
+        }
+
+        $exclude = $this->hashtag_exclusions();
+        $limit   = isset( $mods['max'] ) ? (int) $mods['max'] : 0;
+        $tags    = array();
         foreach ( $terms as $term ) {
-            $tag = (string) apply_filters( 'fediverse_posting_hashtag', self::hashtagify( $term->name ), $term, $taxonomy );
-            $tag = ltrim( $tag, '#' );
-            if ( '' !== $tag ) {
-                $tags[ mb_strtolower( $tag ) ] = '#' . $tag;
+            $tag = self::hashtagify( $term->name );
+            if ( isset( $exclude[ mb_strtolower( $term->name ) ] ) || isset( $exclude[ mb_strtolower( $tag ) ] ) ) {
+                continue;
+            }
+            $tag = ltrim( (string) apply_filters( 'fediverse_posting_hashtag', $tag, $term, $taxonomy ), '#' );
+            $key = mb_strtolower( $tag );
+            if ( '' === $tag || isset( $seen[ $key ] ) ) {
+                continue;
+            }
+            $seen[ $key ] = true;
+            $tags[]       = '#' . $tag;
+            if ( $limit && count( $tags ) >= $limit ) {
+                break;
             }
         }
         return implode( ' ', $tags );
+    }
+
+    /** "deepest:max=2" → array( 'deepest' => true, 'max' => 2 ). */
+    public static function parse_modifiers( $raw ) {
+        $mods = array();
+        foreach ( array_filter( explode( ':', strtolower( (string) $raw ) ) ) as $part ) {
+            if ( 'deepest' === $part || 'top' === $part ) {
+                $mods[ $part ] = true;
+            } elseif ( preg_match( '/^max=(\d+)$/', $part, $m ) ) {
+                $mods['max'] = (int) $m[1];
+            }
+        }
+        return $mods;
     }
 
     /** Placeholder token → taxonomy slug, or '' when not a hashtag token. */
@@ -184,7 +266,16 @@ trait Fediverse_Content_Trait {
         $unknown = array();
         $self    = $this;
 
-        $text = preg_replace_callback( '/\[([a-z0-9_-]+)\]/i', function ( $m ) use ( $post, $self, &$unknown ) {
+        // Hashtags typed literally (e.g. "#Film") count as seen, so a
+        // placeholder never repeats them.
+        $seen = array();
+        if ( preg_match_all( '/(?:^|\s)#([\p{L}\p{N}_]+)/u', preg_replace( '/\[[^\]]*\]/', ' ', (string) $template ), $lit ) ) {
+            foreach ( $lit[1] as $tag ) {
+                $seen[ mb_strtolower( $tag ) ] = true;
+            }
+        }
+
+        $text = preg_replace_callback( '/\[([a-z0-9_-]+)((?::[a-z0-9=_-]+)*)\]/i', function ( $m ) use ( $post, $self, &$unknown, &$seen ) {
             $token = strtolower( $m[1] );
             switch ( $token ) {
                 case 'site-name':
@@ -202,7 +293,7 @@ trait Fediverse_Content_Trait {
             }
             $taxonomy = Fediverse_Posting::taxonomy_from_placeholder( $token );
             if ( '' !== $taxonomy && taxonomy_exists( $taxonomy ) ) {
-                return $post ? $self->hashtags_for( $post, $taxonomy ) : '';
+                return $post ? $self->hashtags_for( $post, $taxonomy, Fediverse_Posting::parse_modifiers( $m[2] ), $seen ) : '';
             }
             $unknown[] = $m[0];
             return $m[0];

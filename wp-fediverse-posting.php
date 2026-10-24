@@ -100,6 +100,8 @@ class Fediverse_Posting {
             'account'                 => array(),
             'post_types'              => self::DEFAULT_POST_TYPES,
             'default_template'        => self::DEFAULT_TEMPLATE,
+            'post_type_templates'     => array(),
+            'hashtag_exclude'         => array(),
             'default_content_type'    => self::DEFAULT_CONTENT_TYPE,
             'default_visibility'      => 'public',
             'default_language'        => '',
@@ -173,6 +175,18 @@ class Fediverse_Posting {
         $types = (array) $this->get_setting( 'post_types' );
         $types = apply_filters( 'fediverse_posting_post_types', $types );
         return array_values( array_filter( array_map( 'sanitize_key', (array) $types ) ) );
+    }
+
+    /** Own text set for a post type in Settings, or '' when it uses the default. */
+    public function own_template_for( $post_type ) {
+        $all = (array) $this->get_setting( 'post_type_templates' );
+        return isset( $all[ $post_type ] ) && '' !== trim( (string) $all[ $post_type ] ) ? (string) $all[ $post_type ] : '';
+    }
+
+    /** Starting text for new fediverse posts of a post type. */
+    public function default_template_for( $post_type ) {
+        $own = $this->own_template_for( $post_type );
+        return '' !== $own ? $own : (string) $this->get_setting( 'default_template' );
     }
 
     /** Capability needed to compose and send. Filter: fediverse_posting_capability. */
