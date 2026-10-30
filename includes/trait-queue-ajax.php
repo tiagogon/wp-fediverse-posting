@@ -10,6 +10,9 @@
  * sanitize_textarea_field(), which would turn "<3" into "&lt;3". It is escaped
  * on output and sent to the server as plain text.
  *
+ * A row's destinations arrive as `destinations[]` (network ids); absent means
+ * the Settings default. Per-network text arrives as `network_templates[id]`.
+ *
  * Used by Fediverse_Queue.
  */
 
@@ -90,7 +93,7 @@ trait Fediverse_Queue_Ajax_Trait {
         $alts = array();
         if ( isset( $_POST['alt'] ) && is_array( $_POST['alt'] ) ) {
             foreach ( wp_unslash( $_POST['alt'] ) as $att_id => $alt ) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- cleaned per item.
-                $alt = trim( self::clean_text( $alt, 1500 ) );
+                $alt = trim( self::clean_text( $alt, 2000 ) );
                 if ( '' !== $alt ) {
                     $alts[ (int) $att_id ] = $alt;
                 }
@@ -102,20 +105,40 @@ trait Fediverse_Queue_Ajax_Trait {
             $type = $gallery ? 'gallery' : 'text';
         }
 
+        $connected    = array_keys( $this->plugin->connected_networks() );
+        $destinations = isset( $_POST['destinations'] )
+            ? array_values( array_intersect( array_map( 'sanitize_key', (array) $_POST['destinations'] ), $connected ) )
+            : $this->plugin->default_destinations();
+
+        $templates = array();
+        if ( isset( $_POST['network_templates'] ) && is_array( $_POST['network_templates'] ) ) {
+            foreach ( $_POST['network_templates'] as $network => $text ) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- clean_text() per item.
+                $network = sanitize_key( $network );
+                $text    = self::clean_text( $text );
+                if ( $this->plugin->network( $network ) && '' !== trim( $text ) ) {
+                    $templates[ $network ] = $text;
+                }
+            }
+        }
+
         $visibility = isset( $_POST['visibility'] ) ? sanitize_key( $_POST['visibility'] ) : 'public';
         $language   = isset( $_POST['language'] ) ? sanitize_key( $_POST['language'] ) : '';
         $spoiler    = isset( $_POST['spoiler_text'] ) ? trim( self::clean_text( $_POST['spoiler_text'], 500 ) ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- clean_text().
+        $label      = isset( $_POST['sensitive_label'] ) ? sanitize_key( $_POST['sensitive_label'] ) : '';
 
         return array(
-            'post_id'       => $post ? $post->ID : 0,
-            'content_type'  => $type,
-            'template'      => isset( $_POST['template'] ) ? self::clean_text( $_POST['template'] ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- clean_text().
-            'gallery_ids'   => $gallery,
-            'alt_overrides' => $alts,
-            'visibility'    => array_key_exists( $visibility, Fediverse_Posting::visibilities() ) ? $visibility : 'public',
-            'language'      => preg_match( '/^[a-z]{2,3}$/', $language ) ? $language : '',
-            'spoiler_text'  => $spoiler,
-            'is_sensitive'  => ! empty( $_POST['sensitive'] ) ? 1 : 0,
+            'post_id'           => $post ? $post->ID : 0,
+            'content_type'      => $type,
+            'template'          => isset( $_POST['template'] ) ? self::clean_text( $_POST['template'] ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- clean_text().
+            'network_templates' => $templates,
+            'destinations'      => $destinations,
+            'gallery_ids'       => $gallery,
+            'alt_overrides'     => $alts,
+            'visibility'        => array_key_exists( $visibility, Fediverse_Posting::visibilities() ) ? $visibility : 'public',
+            'language'          => preg_match( '/^[a-z]{2,3}$/', $language ) ? $language : '',
+            'spoiler_text'      => $spoiler,
+            'is_sensitive'      => ! empty( $_POST['sensitive'] ) ? 1 : 0,
+            'sensitive_label'   => array_key_exists( $label, Fediverse_Network_Bluesky::labels() ) ? $label : '',
         );
     }
 
@@ -138,6 +161,17 @@ trait Fediverse_Queue_Ajax_Trait {
         }
         if ( '' === trim( $data['template'] ) && ! $data['gallery_ids'] && 'link_image' !== $data['content_type'] ) {
             wp_send_json_error( array( 'message' => __( 'Write something first.', 'wp-fediverse-posting' ) ) );
+        }
+        // Targets that already went out (or were deleted there) stay whatever is ticked.
+        if ( $row ) {
+            foreach ( $row['targets'] as $network => $target ) {
+                if ( in_array( $target['status'], array( 'published', 'removed' ), true ) && ! in_array( $network, $data['destinations'], true ) ) {
+                    $data['destinations'][] = $network;
+                }
+            }
+        }
+        if ( empty( $data['destinations'] ) ) {
+            wp_send_json_error( array( 'message' => __( 'Pick at least one network.', 'wp-fediverse-posting' ) ) );
         }
 
         switch ( $when ) {
@@ -192,70 +226,143 @@ trait Fediverse_Queue_Ajax_Trait {
             $extra['message'] = __( 'Saved. It is paused until the post is published.', 'wp-fediverse-posting' );
         }
         if ( 'now' === $when ) {
-            $result = $this->send_row( $id );
-            if ( is_wp_error( $result ) ) {
-                $extra['message'] = $result->get_error_message();
-                $extra['error']   = true;
-            } else {
-                $extra['message'] = __( 'Posted.', 'wp-fediverse-posting' );
-                $extra['url']     = $result['url'];
-            }
+            $extra = array_merge( $extra, $this->send_result_message( $this->send_row( $id ) ) );
         }
         $this->list_response( $context, 'editor' === $context && $post ? $post->ID : 0, $extra );
     }
 
-    /** Live preview: the text as it will be sent, counter, images, warnings. */
+    /** Flash message for a send_row() result: all good, partly good, or an error. */
+    private function send_result_message( $result ) {
+        if ( is_wp_error( $result ) ) {
+            return array( 'message' => $result->get_error_message(), 'error' => true );
+        }
+        if ( empty( $result['failed'] ) ) {
+            return array( 'message' => __( 'Posted.', 'wp-fediverse-posting' ), 'url' => $result['url'] );
+        }
+        $labels = array();
+        foreach ( array_keys( $result['published'] ) as $id ) {
+            $network  = $this->plugin->network( $id );
+            $labels[] = $network ? $network->label() : $id;
+        }
+        $failed = array();
+        foreach ( $result['failed'] as $id => $message ) {
+            $network  = $this->plugin->network( $id );
+            $failed[] = ( $network ? $network->label() : $id ) . ': ' . $message;
+        }
+        return array(
+            /* translators: 1: networks that got the post, 2: "Network: error" list */
+            'message' => sprintf( __( 'Posted on %1$s. %2$s', 'wp-fediverse-posting' ), implode( ', ', $labels ), implode( ' ', $failed ) ),
+            'url'     => $result['url'],
+            'error'   => true,
+        );
+    }
+
+    /**
+     * Live preview, one block per ticked network: the text as that network
+     * will get it (shortened when it must be), its counter, images, the link
+     * card Bluesky builds, and warnings. Common warnings come separately.
+     */
     public function ajax_preview() {
         $this->check_request();
         $post   = $this->request_post( isset( $_POST['post_id'] ) ? absint( $_POST['post_id'] ) : 0 );
         $data   = $this->composer_input( $post );
         $plugin = $this->plugin;
-        $limits = $plugin->instance_limits();
 
-        $unknown = array();
-        $text    = $plugin->render_template( $data['template'], $post, $unknown );
-        $chars   = $plugin->count_characters( $text );
-        $media   = $plugin->resolve_media_ids( $data, $post );
+        $common   = array();
+        $networks = array();
+        foreach ( $data['destinations'] as $network_id ) {
+            $network = $plugin->network( $network_id );
+            $limits  = $network->limits();
+            $unknown = array();
+            $text    = $plugin->render_template( $network->template_for_row( $data ), $post, $unknown );
+            $chars   = $network->count_characters( $text );
+            $over    = $chars > $limits['max_characters'];
+            $media   = $plugin->resolve_media_ids( $data, $post, $limits );
+            $warn    = array();
 
+            if ( $unknown ) {
+                /* translators: %s: list of placeholders */
+                $common[] = sprintf( __( 'Check the spelling of: %s (unknown placeholders are sent as typed; unknown modifiers are ignored).', 'wp-fediverse-posting' ), implode( ' ', array_unique( $unknown ) ) );
+            }
+            if ( $over && ! $limits['hard_limit'] ) {
+                $text = $network->truncate( $text, $limits['max_characters'] );
+                /* translators: 1: network, 2: limit */
+                $warn[] = sprintf( __( '%1$s allows %2$d characters: the text will be shortened as shown.', 'wp-fediverse-posting' ), $network->label(), $limits['max_characters'] );
+            }
+
+            $images = array();
+            foreach ( $media as $att_id ) {
+                $src      = wp_get_attachment_image_src( $att_id, 'medium_large' );
+                $alt      = $plugin->alt_text_for( $att_id, $data, $limits['alt_max'] );
+                $images[] = array(
+                    'id'          => $att_id,
+                    'url'         => $src ? $src[0] : '',
+                    'alt'         => $alt,
+                    'alt_library' => (string) get_post_meta( $att_id, '_wp_attachment_image_alt', true ),
+                );
+            }
+
+            $card = null;
+            if ( $post && ! $network->supports( 'server_link_card' ) && in_array( $data['content_type'], array( 'link', 'link_image', 'gallery' ), true ) && ( 'gallery' !== $data['content_type'] || empty( $media ) ) ) {
+                $card = array(
+                    'title'       => wp_specialchars_decode( wp_strip_all_tags( get_the_title( $post ) ), ENT_QUOTES ),
+                    'description' => Fediverse_Posting::excerpt_for( $post ),
+                    'host'        => wp_parse_url( home_url(), PHP_URL_HOST ),
+                    'thumb'       => $images ? $images[0]['url'] : '',
+                );
+                $images = array(); // The image is the card's thumbnail, not an attachment.
+            } elseif ( $media && $network->supports( 'server_link_card' ) && preg_match( '#https?://#', $text ) ) {
+                /* translators: %s: network */
+                $warn[] = sprintf( __( 'With images attached, %s shows the images instead of a link preview card.', 'wp-fediverse-posting' ), $network->label() );
+            }
+
+            $networks[ $network_id ] = array(
+                'label'    => $network->label(),
+                'text'     => $text,
+                'chars'    => $over && ! $limits['hard_limit'] ? $network->count_characters( $text ) : $chars,
+                'max'      => (int) $limits['max_characters'],
+                'over'     => $over,
+                'hard'     => (bool) $limits['hard_limit'],
+                'images'   => $images,
+                'card'     => $card,
+                'warnings' => $warn,
+            );
+        }
+
+        // Alt-text list in the composer: the images of the first network (the set is the same, the cap may differ).
+        $first  = $networks ? reset( $networks ) : null;
+        $media  = $plugin->resolve_media_ids( $data, $post, $plugin->default_limits() );
         $images = array();
         foreach ( $media as $att_id ) {
             $src      = wp_get_attachment_image_src( $att_id, 'medium_large' );
-            $alt      = $plugin->alt_text_for( $att_id, $data );
             $images[] = array(
                 'id'          => $att_id,
                 'url'         => $src ? $src[0] : '',
-                'alt'         => $alt,
+                'alt'         => $plugin->alt_text_for( $att_id, $data, 1500 ),
                 'alt_library' => (string) get_post_meta( $att_id, '_wp_attachment_image_alt', true ),
             );
         }
 
-        $warnings = array();
-        if ( $unknown ) {
-            /* translators: %s: list of placeholders */
-            $warnings[] = sprintf( __( 'Check the spelling of: %s (unknown placeholders are sent as typed; unknown modifiers are ignored).', 'wp-fediverse-posting' ), implode( ' ', array_unique( $unknown ) ) );
-        }
         if ( $post && ! self::post_is_public( $post ) && false !== strpos( $data['template'], '[post-url]' ) ) {
-            $warnings[] = __( 'The post is not published yet, so its link does not work. "Now" is off until it is.', 'wp-fediverse-posting' );
+            $common[] = __( 'The post is not published yet, so its link does not work. "Now" is off until it is.', 'wp-fediverse-posting' );
         }
         if ( 'link_image' === $data['content_type'] && empty( $media ) && $post ) {
-            $warnings[] = __( 'This post has no featured image: it will go out as text + link.', 'wp-fediverse-posting' );
-        }
-        if ( $media && preg_match( '#https?://#', $text ) ) {
-            $warnings[] = __( 'With images attached, Mastodon shows the images instead of a link preview card.', 'wp-fediverse-posting' );
+            $common[] = __( 'This post has no featured image: it will go out as text + link.', 'wp-fediverse-posting' );
         }
         foreach ( $images as $img ) {
             if ( '' === $img['alt'] ) {
-                $warnings[] = __( 'An image has no alt text. Many people on the fediverse rely on it (and some boost only described images).', 'wp-fediverse-posting' );
+                $common[] = __( 'An image has no alt text. Many people rely on it (and some boost only described images).', 'wp-fediverse-posting' );
                 break;
             }
         }
+        if ( empty( $networks ) ) {
+            $common[] = __( 'Pick at least one network.', 'wp-fediverse-posting' );
+        }
 
         wp_send_json_success( array(
-            'text'     => $text,
-            'chars'    => $chars,
-            'max'      => $limits['max_characters'],
+            'networks' => $networks,
             'images'   => $images,
-            'warnings' => $warnings,
+            'warnings' => array_values( array_unique( $common ) ),
         ) );
     }
 
@@ -280,34 +387,50 @@ trait Fediverse_Queue_Ajax_Trait {
         $this->list_response( $context, 'editor' === $context ? $row['post_id'] : 0 );
     }
 
-    /** Failed row → send now. */
+    /** Failed or paused row → send now. With `target`, only that network is reset. */
     public function ajax_retry() {
         $context = $this->check_request();
         $row     = $this->request_row( isset( $_POST['id'] ) ? absint( $_POST['id'] ) : 0 );
+        $target  = isset( $_POST['target'] ) ? absint( $_POST['target'] ) : 0;
         if ( ! in_array( $row['status'], array( 'failed', 'paused' ), true ) ) {
             wp_send_json_error( array( 'message' => __( 'Only failed or paused posts can be retried.', 'wp-fediverse-posting' ) ) );
         }
+        foreach ( $row['targets'] as $t ) {
+            if ( 'failed' === $t['status'] && ( ! $target || $target === $t['id'] ) ) {
+                $this->update_target( $t['id'], array( 'status' => 'pending', 'attempts' => 0, 'retry_at' => null, 'error_message' => null ) );
+            }
+        }
         $this->update_row( $row['id'], array( 'status' => 'scheduled', 'scheduled_at' => gmdate( 'Y-m-d H:i:s' ), 'attempts' => 0, 'error_message' => null ) );
-        $result = $this->send_row( $row['id'] );
-        $extra  = is_wp_error( $result )
-            ? array( 'message' => $result->get_error_message(), 'error' => true )
-            : array( 'message' => __( 'Posted.', 'wp-fediverse-posting' ), 'url' => $result['url'] );
+        $extra = $this->send_result_message( $this->send_row( $row['id'] ) );
         $this->list_response( $context, 'editor' === $context ? $row['post_id'] : 0, $extra );
     }
 
-    /** Published row → delete the post on the server, keep the row as "removed". */
+    /** Published target → delete the post on its network, keep it as "removed". */
     public function ajax_delete_remote() {
         $context = $this->check_request();
         $row     = $this->request_row( isset( $_POST['id'] ) ? absint( $_POST['id'] ) : 0 );
-        if ( 'published' !== $row['status'] || '' === $row['remote_id'] ) {
-            wp_send_json_error( array( 'message' => __( 'This post is not on the fediverse.', 'wp-fediverse-posting' ) ) );
+        $id      = isset( $_POST['target'] ) ? absint( $_POST['target'] ) : 0;
+        $target  = null;
+        foreach ( $row['targets'] as $t ) {
+            if ( 'published' === $t['status'] && '' !== $t['remote_id'] && ( $id === $t['id'] || ( ! $id && ! $target ) ) ) {
+                $target = $t;
+            }
         }
-        $res = $this->plugin->delete_status( $row['remote_id'] );
+        if ( ! $target ) {
+            wp_send_json_error( array( 'message' => __( 'This post is not on that network.', 'wp-fediverse-posting' ) ) );
+        }
+        $network = $this->plugin->network( $target['network'] );
+        if ( ! $network || ! $network->is_connected() ) {
+            wp_send_json_error( array( 'message' => __( 'That network is not connected.', 'wp-fediverse-posting' ) ) );
+        }
+        $res = $network->delete( $target['remote_id'] );
         if ( is_wp_error( $res ) ) {
             wp_send_json_error( array( 'message' => $res->get_error_message() ) );
         }
-        $this->update_row( $row['id'], array( 'status' => 'removed' ) );
-        $this->list_response( $context, 'editor' === $context ? $row['post_id'] : 0, array( 'message' => __( 'Deleted on the fediverse.', 'wp-fediverse-posting' ) ) );
+        $this->update_target( $target['id'], array( 'status' => 'removed' ) );
+        $this->settle_row( $row );
+        /* translators: %s: network */
+        $this->list_response( $context, 'editor' === $context ? $row['post_id'] : 0, array( 'message' => sprintf( __( 'Deleted on %s.', 'wp-fediverse-posting' ), $network->label() ) ) );
     }
 
     /** Planner drag-and-drop: new order of queue rows. */

@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       Fediverse Posting for WordPress
  * Plugin URI:        https://github.com/tiagogon/wp-fediverse-posting
- * Description:       Share posts on your Mastodon (or any Mastodon-compatible) account: post now, when a post is published, or from a queue with weekly time slots.
- * Version:           1.0.0
+ * Description:       Share posts on Mastodon (or any Mastodon-compatible server) and Bluesky: post now, when a post is published, or from a queue with weekly time slots.
+ * Version:           1.1.0
  * Requires at least: 6.4
  * Requires PHP:      7.4
  * Author:            Tiago Gonçalves
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'FEDIVERSE_POSTING_VERSION', '1.0.0' );
+define( 'FEDIVERSE_POSTING_VERSION', '1.1.0' );
 define( 'FEDIVERSE_POSTING_FILE', __FILE__ );
 define( 'FEDIVERSE_POSTING_DIR', plugin_dir_path( __FILE__ ) );
 define( 'FEDIVERSE_POSTING_URL', plugin_dir_url( __FILE__ ) );
@@ -30,12 +30,18 @@ require_once FEDIVERSE_POSTING_DIR . 'includes/trait-mastodon-api.php';
 require_once FEDIVERSE_POSTING_DIR . 'includes/trait-content.php';
 require_once FEDIVERSE_POSTING_DIR . 'includes/trait-queue-ajax.php';
 require_once FEDIVERSE_POSTING_DIR . 'includes/trait-queue-editor.php';
+require_once FEDIVERSE_POSTING_DIR . 'includes/networks/class-network.php';
+require_once FEDIVERSE_POSTING_DIR . 'includes/networks/class-network-mastodon.php';
+require_once FEDIVERSE_POSTING_DIR . 'includes/networks/class-bluesky-text.php';
+require_once FEDIVERSE_POSTING_DIR . 'includes/networks/class-bluesky-session.php';
+require_once FEDIVERSE_POSTING_DIR . 'includes/networks/class-network-bluesky.php';
 require_once FEDIVERSE_POSTING_DIR . 'fediverse-queue.php';
 require_once FEDIVERSE_POSTING_DIR . 'fediverse-queue-settings.php';
 
 /**
- * Main plugin class: settings, connection, API client, content rendering.
- * The queue (table, schedule, cron, editor box, AJAX) lives in Fediverse_Queue.
+ * Main plugin class: settings, the networks (Mastodon, Bluesky), content
+ * rendering. The queue (table, schedule, cron, editor box, AJAX) lives in
+ * Fediverse_Queue; each network's HTTP code in includes/networks/.
  *
  * Trait names carry a Fediverse_ prefix on purpose: the sibling Instagram
  * plugin declares unprefixed traits (Settings_Page_Trait…) and both plugins
@@ -44,8 +50,6 @@ require_once FEDIVERSE_POSTING_DIR . 'fediverse-queue-settings.php';
 class Fediverse_Posting {
 
     use Fediverse_Settings_Page_Trait;
-    use Fediverse_OAuth_Trait;
-    use Fediverse_Mastodon_API_Trait;
     use Fediverse_Content_Trait;
 
     const OPTION_NAME  = 'fediverse_posting_settings';
@@ -54,6 +58,7 @@ class Fediverse_Posting {
     const LOG_DIR      = 'wp-fediverse-posting';
     const LOG_FILE     = 'debug.log';
 
+    const SETTINGS_VERSION     = 2;
     const DEFAULT_TEMPLATE     = '[post-title] [post-url]';
     const DEFAULT_CONTENT_TYPE = 'link_image';
     const DEFAULT_POST_TYPES   = array( 'post' );
@@ -61,20 +66,28 @@ class Fediverse_Posting {
     /** @var Fediverse_Queue */
     public $queue;
 
+    /** @var Fediverse_Network[] keyed by id, in display order */
+    private $networks = array();
+
     public function __construct() {
+        foreach ( array( new Fediverse_Network_Mastodon( $this ), new Fediverse_Network_Bluesky( $this ) ) as $network ) {
+            $this->networks[ $network->id() ] = $network;
+        }
+        /** Experimental: add a Fediverse_Network implementation. Keyed by id. */
+        $this->networks = apply_filters( 'fediverse_posting_networks', $this->networks );
+        foreach ( $this->networks as $network ) {
+            $network->register_hooks();
+        }
+
         $this->queue = new Fediverse_Queue( $this );
 
+        add_action( 'plugins_loaded', array( __CLASS__, 'maybe_migrate_settings' ), 5 );
         add_action( 'init', array( $this, 'load_textdomain' ) );
         add_action( 'admin_menu', array( $this, 'add_admin_pages' ) );
         add_action( 'admin_init', array( $this, 'register_settings' ) );
         add_action( 'admin_enqueue_scripts', array( $this, 'maybe_enqueue_admin_assets' ) );
         add_action( 'admin_bar_menu', array( $this, 'add_admin_bar_link' ), 100 );
         add_action( 'admin_notices', array( $this, 'settings_notices' ) );
-
-        add_action( 'admin_post_fediverse_connect', array( $this, 'handle_connect' ) );
-        add_action( 'admin_post_fediverse_oauth_callback', array( $this, 'handle_oauth_callback' ) );
-        add_action( 'admin_post_fediverse_save_token', array( $this, 'handle_save_token' ) );
-        add_action( 'admin_post_fediverse_disconnect', array( $this, 'handle_disconnect' ) );
         add_action( 'wp_ajax_fediverse_clear_log', array( $this, 'ajax_clear_log' ) );
 
         add_filter( 'plugin_action_links_' . plugin_basename( FEDIVERSE_POSTING_FILE ), array( $this, 'plugin_action_links' ) );
@@ -82,6 +95,53 @@ class Fediverse_Posting {
 
     public function load_textdomain() {
         load_plugin_textdomain( 'wp-fediverse-posting', false, dirname( plugin_basename( FEDIVERSE_POSTING_FILE ) ) . '/languages' );
+    }
+
+
+    // =====================================================================
+    //  NETWORKS
+    // =====================================================================
+
+    /** @return Fediverse_Network[] keyed by id. */
+    public function networks() {
+        return $this->networks;
+    }
+
+    /** @return Fediverse_Network|null */
+    public function network( $id ) {
+        return isset( $this->networks[ $id ] ) ? $this->networks[ $id ] : null;
+    }
+
+    /** @return Fediverse_Network[] keyed by id. */
+    public function connected_networks() {
+        return array_filter( $this->networks, function ( $n ) {
+            return $n->is_connected();
+        } );
+    }
+
+    /** At least one network is connected. */
+    public function is_connected() {
+        return ! empty( $this->connected_networks() );
+    }
+
+    /**
+     * Network ids a new row is sent to: the Settings choice, limited to the
+     * connected networks; nothing chosen (or nothing left) = every connected one.
+     */
+    public function default_destinations() {
+        $connected = array_keys( $this->connected_networks() );
+        $chosen    = array_values( array_intersect( (array) $this->get_setting( 'default_destinations' ), $connected ) );
+        return $chosen ? $chosen : $connected;
+    }
+
+    /**
+     * Limits used when a caller has no network in mind: the first connected
+     * network's, else Mastodon's defaults.
+     */
+    public function default_limits() {
+        $connected = $this->connected_networks();
+        $network   = $connected ? reset( $connected ) : $this->network( 'mastodon' );
+        return $network->limits();
     }
 
 
@@ -95,22 +155,32 @@ class Fediverse_Posting {
      */
     public static function defaults() {
         return array(
-            'instance'                => '',
-            'access_token'            => '',
-            'account'                 => array(),
-            'post_types'              => self::DEFAULT_POST_TYPES,
-            'default_template'        => self::DEFAULT_TEMPLATE,
-            'post_type_templates'     => array(),
-            'hashtag_exclude'         => array(),
-            'default_content_type'    => self::DEFAULT_CONTENT_TYPE,
-            'default_visibility'      => 'public',
-            'default_language'        => '',
-            'auto_on_publish'         => 0,
-            'menu_position'           => 'after_settings',
-            'debug_logging'           => 0,
+            'settings_version'         => self::SETTINGS_VERSION,
+            'networks'                 => self::network_defaults(),
+            'default_destinations'     => array(),
+            'network_templates'        => array(),
+            'bluesky_sensitive_label'  => 'graphic-media',
+            'post_types'               => self::DEFAULT_POST_TYPES,
+            'default_template'         => self::DEFAULT_TEMPLATE,
+            'post_type_templates'      => array(),
+            'hashtag_exclude'          => array(),
+            'default_content_type'     => self::DEFAULT_CONTENT_TYPE,
+            'default_visibility'       => 'public',
+            'default_language'         => '',
+            'auto_on_publish'          => 0,
+            'menu_position'            => 'after_settings',
+            'debug_logging'            => 0,
             'delete_data_on_uninstall' => 0,
-            'queue_enabled'           => 1,
-            'queue_schedule'          => array(),
+            'queue_enabled'            => 1,
+            'queue_schedule'           => array(),
+        );
+    }
+
+    /** Per-network connection keys. Volatile session state lives elsewhere. */
+    public static function network_defaults() {
+        return array(
+            'mastodon' => array( 'instance' => '', 'access_token' => '', 'account' => array() ),
+            'bluesky'  => array( 'method' => 'app_password', 'handle' => '', 'app_password' => '', 'pds' => '' ),
         );
     }
 
@@ -126,7 +196,7 @@ class Fediverse_Posting {
 
     /**
      * Write a subset of keys, keeping the rest. The option is never autoloaded:
-     * it holds the access token and is only needed on admin screens and cron.
+     * it holds the tokens and is only needed on admin screens and cron.
      */
     public static function update_settings( $changes ) {
         $opts = get_option( self::OPTION_NAME, null );
@@ -137,34 +207,42 @@ class Fediverse_Posting {
         update_option( self::OPTION_NAME, array_merge( is_array( $opts ) ? $opts : array(), $changes ), false );
     }
 
-    /** Server host (e.g. "ciberlandia.pt"); wp-config constant wins. */
-    public function get_instance() {
-        if ( defined( 'FEDIVERSE_POSTING_INSTANCE' ) && FEDIVERSE_POSTING_INSTANCE ) {
-            return self::normalize_instance( FEDIVERSE_POSTING_INSTANCE );
+    /** One network's stored settings merged with its defaults. */
+    public function network_settings( $id ) {
+        $all      = (array) $this->get_setting( 'networks' );
+        $defaults = self::network_defaults();
+        $base     = isset( $defaults[ $id ] ) ? $defaults[ $id ] : array();
+        return array_merge( $base, isset( $all[ $id ] ) && is_array( $all[ $id ] ) ? $all[ $id ] : array() );
+    }
+
+    public static function update_network_settings( $id, array $changes ) {
+        $all = self::get_settings()['networks'];
+        $all = is_array( $all ) ? $all : array();
+        $all[ $id ] = array_merge( isset( $all[ $id ] ) && is_array( $all[ $id ] ) ? $all[ $id ] : array(), $changes );
+        self::update_settings( array( 'networks' => $all ) );
+    }
+
+    /**
+     * 1.0 stored the Mastodon connection as flat keys (instance, access_token,
+     * account). Move them under networks['mastodon'] once.
+     */
+    public static function maybe_migrate_settings() {
+        $opts = get_option( self::OPTION_NAME, null );
+        if ( ! is_array( $opts ) || ( isset( $opts['settings_version'] ) && (int) $opts['settings_version'] >= self::SETTINGS_VERSION ) ) {
+            return;
         }
-        return (string) $this->get_setting( 'instance' );
-    }
-
-    /** Access token; wp-config constant wins. */
-    public function get_token() {
-        if ( defined( 'FEDIVERSE_POSTING_TOKEN' ) && FEDIVERSE_POSTING_TOKEN ) {
-            return (string) FEDIVERSE_POSTING_TOKEN;
+        $networks = isset( $opts['networks'] ) && is_array( $opts['networks'] ) ? $opts['networks'] : array();
+        $mastodon = isset( $networks['mastodon'] ) && is_array( $networks['mastodon'] ) ? $networks['mastodon'] : array();
+        foreach ( array( 'instance', 'access_token', 'account' ) as $key ) {
+            if ( isset( $opts[ $key ] ) && ! isset( $mastodon[ $key ] ) ) {
+                $mastodon[ $key ] = $opts[ $key ];
+            }
+            unset( $opts[ $key ] );
         }
-        return (string) $this->get_setting( 'access_token' );
-    }
-
-    public static function uses_constants() {
-        return defined( 'FEDIVERSE_POSTING_TOKEN' ) && FEDIVERSE_POSTING_TOKEN;
-    }
-
-    public function is_connected() {
-        return '' !== $this->get_instance() && '' !== $this->get_token();
-    }
-
-    /** Connected account as returned by verify_credentials (trimmed). */
-    public function get_account() {
-        $account = $this->get_setting( 'account' );
-        return is_array( $account ) ? $account : array();
+        $networks['mastodon']     = $mastodon;
+        $opts['networks']         = $networks;
+        $opts['settings_version'] = self::SETTINGS_VERSION;
+        update_option( self::OPTION_NAME, $opts, false );
     }
 
     /**
@@ -189,6 +267,19 @@ class Fediverse_Posting {
         return '' !== $own ? $own : (string) $this->get_setting( 'default_template' );
     }
 
+    /**
+     * A network's own starting text for a post type (Settings → "Bluesky text
+     * per post type"), or '' when that network uses the common text.
+     */
+    public function network_template_for( $network_id, $post_type ) {
+        $all = (array) $this->get_setting( 'network_templates' );
+        if ( empty( $all[ $network_id ][ $post_type ] ) ) {
+            return '';
+        }
+        $text = (string) $all[ $network_id ][ $post_type ];
+        return '' !== trim( $text ) ? $text : '';
+    }
+
     /** Capability needed to compose and send. Filter: fediverse_posting_capability. */
     public static function compose_capability() {
         return apply_filters( 'fediverse_posting_capability', 'publish_posts' );
@@ -197,6 +288,10 @@ class Fediverse_Posting {
     /** Capability for the Settings page. Filter: fediverse_posting_settings_capability. */
     public static function settings_capability() {
         return apply_filters( 'fediverse_posting_settings_capability', 'manage_options' );
+    }
+
+    public static function settings_url( $args = array() ) {
+        return add_query_arg( $args, admin_url( 'admin.php?page=fediverse-posting-settings' ) );
     }
 
 
@@ -276,6 +371,7 @@ class Fediverse_Posting {
         if ( null === get_option( self::OPTION_NAME, null ) ) {
             add_option( self::OPTION_NAME, self::defaults(), '', false );
         }
+        self::maybe_migrate_settings();
         Fediverse_Queue::activate();
     }
 

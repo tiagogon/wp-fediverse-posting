@@ -12,8 +12,9 @@
  *
  * Fallback: paste an access token (fediverse_save_token), checked the same way.
  *
- * Used by Fediverse_Posting. Uses: api_request_raw(), verify_credentials(),
- * get_instance(), get_token(), update_settings(), log().
+ * Used by Fediverse_Network_Mastodon. Uses: api_request_raw(),
+ * verify_credentials(), get_instance(), settings(), update_settings(), log(),
+ * and the redirect/capability helpers of Fediverse_Network.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -30,9 +31,6 @@ trait Fediverse_OAuth_Trait {
         return admin_url( 'admin-post.php?action=fediverse_oauth_callback' );
     }
 
-    public static function settings_url( $args = array() ) {
-        return add_query_arg( $args, admin_url( 'admin.php?page=fediverse-posting-settings' ) );
-    }
 
     /**
      * "https://Ciberlandia.pt/@tiago" → "ciberlandia.pt". Also accepts
@@ -49,17 +47,7 @@ trait Fediverse_OAuth_Trait {
         return preg_match( '/^[a-z0-9.-]+(:\d+)?$/', $input ) && false !== strpos( $input, '.' ) ? $input : '';
     }
 
-    private function redirect_with_notice( $code, $type = 'error' ) {
-        wp_safe_redirect( self::settings_url( array( 'fedi_notice' => $code, 'fedi_type' => $type ) ) );
-        exit;
-    }
 
-    private function require_settings_cap( $nonce_action ) {
-        if ( ! current_user_can( self::settings_capability() ) ) {
-            wp_die( esc_html__( 'You are not allowed to change these settings.', 'wp-fediverse-posting' ), 403 );
-        }
-        check_admin_referer( $nonce_action );
-    }
 
     /**
      * Get (or register) this site's app on $instance. Re-registers when the
@@ -68,7 +56,7 @@ trait Fediverse_OAuth_Trait {
      * @return array|WP_Error {client_id, client_secret}
      */
     private function get_or_register_app( $instance ) {
-        $apps     = get_option( self::APPS_OPTION, array() );
+        $apps     = get_option( Fediverse_Posting::APPS_OPTION, array() );
         $redirect = self::oauth_redirect_uri();
 
         if ( isset( $apps[ $instance ]['client_id'], $apps[ $instance ]['redirect'] ) && $apps[ $instance ]['redirect'] === $redirect ) {
@@ -96,7 +84,7 @@ trait Fediverse_OAuth_Trait {
             'client_secret' => (string) $res['body']['client_secret'],
             'redirect'      => $redirect,
         );
-        update_option( self::APPS_OPTION, $apps, false );
+        update_option( Fediverse_Posting::APPS_OPTION, $apps, false );
         $this->log( "Registered app on {$instance}.", 'INFO' );
         return $apps[ $instance ];
     }
@@ -113,7 +101,7 @@ trait Fediverse_OAuth_Trait {
         $app = $this->get_or_register_app( $instance );
         if ( is_wp_error( $app ) ) {
             $this->log( 'Connect failed on ' . $instance . ': ' . $app->get_error_message(), 'ERROR' );
-            set_transient( 'fediverse_notice_detail_' . get_current_user_id(), $app->get_error_message(), 300 );
+            $this->remember_notice_detail( $app->get_error_message() );
             $this->redirect_with_notice( 'app_failed' );
         }
 
@@ -135,7 +123,7 @@ trait Fediverse_OAuth_Trait {
 
     /** admin-post: fediverse_oauth_callback (the server sends the user back here). */
     public function handle_oauth_callback() {
-        if ( ! current_user_can( self::settings_capability() ) ) {
+        if ( ! current_user_can( Fediverse_Posting::settings_capability() ) ) {
             wp_die( esc_html__( 'You are not allowed to change these settings.', 'wp-fediverse-posting' ), 403 );
         }
 
@@ -157,7 +145,7 @@ trait Fediverse_OAuth_Trait {
         }
 
         $instance = $pending['instance'];
-        $apps     = get_option( self::APPS_OPTION, array() );
+        $apps     = get_option( Fediverse_Posting::APPS_OPTION, array() );
         if ( empty( $apps[ $instance ]['client_id'] ) ) {
             $this->redirect_with_notice( 'app_failed' );
         }
@@ -175,7 +163,7 @@ trait Fediverse_OAuth_Trait {
         if ( is_wp_error( $res ) || empty( $res['body']['access_token'] ) ) {
             $msg = is_wp_error( $res ) ? $res->get_error_message() : 'no access_token';
             $this->log( 'Token exchange failed on ' . $instance . ': ' . $msg, 'ERROR' );
-            set_transient( 'fediverse_notice_detail_' . get_current_user_id(), $msg, 300 );
+            $this->remember_notice_detail( $msg );
             $this->redirect_with_notice( 'token_failed' );
         }
 
@@ -202,11 +190,11 @@ trait Fediverse_OAuth_Trait {
         $account = $this->verify_credentials( $instance, $token );
         if ( is_wp_error( $account ) ) {
             $this->log( 'verify_credentials failed on ' . $instance . ': ' . $account->get_error_message(), 'ERROR' );
-            set_transient( 'fediverse_notice_detail_' . get_current_user_id(), $account->get_error_message(), 300 );
+            $this->remember_notice_detail( $account->get_error_message() );
             $this->redirect_with_notice( 'verify_failed' );
         }
 
-        self::update_settings( array(
+        $this->update_settings( array(
             'instance'     => $instance,
             'access_token' => $token,
             'account'      => $account,
@@ -219,16 +207,16 @@ trait Fediverse_OAuth_Trait {
     /** admin-post: fediverse_disconnect. Revokes the token (best effort) and forgets it. */
     public function handle_disconnect() {
         $this->require_settings_cap( 'fediverse_disconnect' );
-        $this->revoke_token();
-        self::update_settings( array( 'access_token' => '', 'account' => array() ) );
+        $this->disconnect();
         $this->redirect_with_notice( 'disconnected', 'success' );
     }
 
     /** Revoke the stored token on the server. Used by Disconnect and uninstall. */
     public function revoke_token() {
-        $instance = (string) $this->get_setting( 'instance' );
-        $token    = (string) $this->get_setting( 'access_token' );
-        $apps     = get_option( self::APPS_OPTION, array() );
+        $settings = $this->settings();
+        $instance = (string) $settings['instance'];
+        $token    = (string) $settings['access_token'];
+        $apps     = get_option( Fediverse_Posting::APPS_OPTION, array() );
         if ( '' === $instance || '' === $token || empty( $apps[ $instance ]['client_id'] ) ) {
             return;
         }

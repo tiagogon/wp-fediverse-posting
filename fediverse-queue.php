@@ -1,6 +1,8 @@
 <?php
 /**
- * Fediverse_Queue: every fediverse post is one row in {prefix}fediverse_queue.
+ * Fediverse_Queue: every planned post is one row in {prefix}fediverse_queue,
+ * sent to one or more networks. Each network gets a target row in
+ * {prefix}fediverse_queue_targets with its own outcome.
  *
  * Rows and their life:
  *   trigger_type  now | on_publish | queue | at
@@ -8,16 +10,24 @@
  *                 scheduled (has scheduled_at; the cron sends it when due)
  *                 processing → published | failed
  *                 paused    (its WP post left `publish` or went to the trash)
- *                 removed   (published, then deleted on the server from here)
+ *                 removed   (every target deleted on its server from here)
+ *
+ * Targets: pending | published | failed | removed. The ROW owns time (slot,
+ * trigger, pause); a target only records an outcome, its own attempts and
+ * retry back-off (retry_at), the remote id and URL.
  *
  * Guarantees:
  *   - A row is claimed with one UPDATE … WHERE status='scheduled' before it is
  *     sent, so two cron runs (or cron + "Post now") can never both send it.
- *   - Every send carries Idempotency-Key "wpfp-<site>-<row id>"; a retry within
- *     the server's hour returns the first post instead of a second one. That
- *     is why a row stuck in `processing` (PHP died) can safely go back to
- *     `scheduled`.
- *   - Templates are filled in at send time (Fediverse_Content_Trait).
+ *   - Each target is updated right after its own publish, so a row stuck in
+ *     `processing` (PHP died) can go back to `scheduled`: only targets still
+ *     pending are sent again. Mastodon sends carry Idempotency-Key
+ *     "wpfp-<site>-<row id>" on top; Bluesky looks for an identical recent
+ *     post when a target is sent a second time.
+ *   - Templates are filled in at send time (Fediverse_Content_Trait), with the
+ *     network's own text when the row has one (network_templates).
+ *   - A network that is not connected does not fail a target: the row waits
+ *     (process_queue only picks rows with a due target on a connected network).
  *
  * Queue rows (trigger queue) are ordered by `position` and get the next free
  * weekly slot; fixed-time rows (trigger at) keep their moment and queue rows
@@ -34,7 +44,8 @@ class Fediverse_Queue {
     use Fediverse_Queue_Editor_Trait;
 
     const TABLE         = 'fediverse_queue';
-    const DB_VERSION    = '1.0';
+    const TARGETS_TABLE = 'fediverse_queue_targets';
+    const DB_VERSION    = '1.1';
     const DB_OPTION     = 'fediverse_queue_db_version';
     const CRON_HOOK     = 'fediverse_queue_process';
     const CRON_INTERVAL = 'fediverse_5_minutes';
@@ -70,7 +81,7 @@ class Fediverse_Queue {
 
 
     // =====================================================================
-    //  TABLE
+    //  TABLES
     // =====================================================================
 
     public static function table_name() {
@@ -78,10 +89,20 @@ class Fediverse_Queue {
         return $wpdb->prefix . self::TABLE;
     }
 
-    /** `trigger` and `sensitive` are reserved words in MySQL, hence trigger_type and is_sensitive. */
+    public static function targets_table_name() {
+        global $wpdb;
+        return $wpdb->prefix . self::TARGETS_TABLE;
+    }
+
+    /**
+     * `trigger` and `sensitive` are reserved words in MySQL, hence trigger_type
+     * and is_sensitive. remote_id / remote_url on the row are 1.0 leftovers:
+     * targets hold them now (dbDelta cannot drop columns).
+     */
     public static function create_table() {
         global $wpdb;
         $table   = self::table_name();
+        $targets = self::targets_table_name();
         $charset = $wpdb->get_charset_collate();
 
         $sql = "CREATE TABLE {$table} (
@@ -89,12 +110,14 @@ class Fediverse_Queue {
             post_id bigint(20) unsigned NOT NULL DEFAULT 0,
             content_type varchar(20) NOT NULL DEFAULT 'link_image',
             template text NOT NULL,
+            network_templates longtext NULL,
             gallery_ids text NULL,
             alt_overrides text NULL,
             visibility varchar(20) NOT NULL DEFAULT 'public',
             language varchar(10) NOT NULL DEFAULT '',
             spoiler_text varchar(500) NOT NULL DEFAULT '',
             is_sensitive tinyint(1) NOT NULL DEFAULT 0,
+            sensitive_label varchar(20) NOT NULL DEFAULT '',
             trigger_type varchar(20) NOT NULL DEFAULT 'queue',
             position int(11) NOT NULL DEFAULT 0,
             scheduled_at datetime NULL DEFAULT NULL,
@@ -110,11 +133,41 @@ class Fediverse_Queue {
             PRIMARY KEY  (id),
             KEY status_scheduled (status,scheduled_at),
             KEY post_id (post_id)
+        ) {$charset};
+        CREATE TABLE {$targets} (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            row_id bigint(20) unsigned NOT NULL,
+            network varchar(20) NOT NULL,
+            status varchar(20) NOT NULL DEFAULT 'pending',
+            attempts tinyint(3) unsigned NOT NULL DEFAULT 0,
+            retry_at datetime NULL DEFAULT NULL,
+            error_message text NULL,
+            remote_id varchar(255) NOT NULL DEFAULT '',
+            remote_url varchar(500) NOT NULL DEFAULT '',
+            published_at datetime NULL DEFAULT NULL,
+            updated_at datetime NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY row_network (row_id,network),
+            KEY status_network (status,network,retry_at)
         ) {$charset};";
 
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         dbDelta( $sql );
+        self::migrate_targets();
         update_option( self::DB_OPTION, self::DB_VERSION, false );
+    }
+
+    /** 1.0 rows (one Mastodon post each) get their `mastodon` target. Idempotent. */
+    private static function migrate_targets() {
+        global $wpdb;
+        $table   = self::table_name();
+        $targets = self::targets_table_name();
+        $wpdb->query( "INSERT INTO {$targets} (row_id, network, status, attempts, error_message, remote_id, remote_url, published_at, updated_at)
+            SELECT q.id, 'mastodon',
+                CASE q.status WHEN 'published' THEN 'published' WHEN 'failed' THEN 'failed' WHEN 'removed' THEN 'removed' ELSE 'pending' END,
+                q.attempts, q.error_message, q.remote_id, q.remote_url, q.published_at, q.updated_at
+            FROM {$table} q
+            WHERE NOT EXISTS (SELECT 1 FROM {$targets} t WHERE t.row_id = q.id)" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
     }
 
     /** Per site (multisite-safe) and after plugin updates. */
@@ -128,28 +181,74 @@ class Fediverse_Queue {
         return gmdate( 'Y-m-d H:i:s' );
     }
 
-    /** Decode a DB row into typed values. */
+    /** Decode a DB row into typed values. Targets are attached separately. */
     private static function hydrate( $row ) {
         if ( ! $row ) {
             return null;
         }
-        $row                  = (array) $row;
-        $row['id']            = (int) $row['id'];
-        $row['post_id']       = (int) $row['post_id'];
-        $row['is_sensitive']  = (int) $row['is_sensitive'];
-        $row['position']      = (int) $row['position'];
-        $row['attempts']      = (int) $row['attempts'];
-        $gallery              = json_decode( (string) $row['gallery_ids'], true );
-        $row['gallery_ids']   = is_array( $gallery ) ? array_map( 'intval', $gallery ) : array();
-        $alts                 = json_decode( (string) $row['alt_overrides'], true );
-        $row['alt_overrides'] = is_array( $alts ) ? $alts : array();
+        $row                      = (array) $row;
+        $row['id']                = (int) $row['id'];
+        $row['post_id']           = (int) $row['post_id'];
+        $row['is_sensitive']      = (int) $row['is_sensitive'];
+        $row['position']          = (int) $row['position'];
+        $row['attempts']          = (int) $row['attempts'];
+        $gallery                  = json_decode( (string) $row['gallery_ids'], true );
+        $row['gallery_ids']       = is_array( $gallery ) ? array_map( 'intval', $gallery ) : array();
+        $alts                     = json_decode( (string) $row['alt_overrides'], true );
+        $row['alt_overrides']     = is_array( $alts ) ? $alts : array();
+        $templates                = json_decode( (string) $row['network_templates'], true );
+        $row['network_templates'] = is_array( $templates ) ? array_map( 'strval', $templates ) : array();
+        $row['sensitive_label']   = isset( $row['sensitive_label'] ) ? (string) $row['sensitive_label'] : '';
+        $row['targets']           = array();
         return $row;
+    }
+
+    private static function hydrate_target( $t ) {
+        $t             = (array) $t;
+        $t['id']       = (int) $t['id'];
+        $t['row_id']   = (int) $t['row_id'];
+        $t['attempts'] = (int) $t['attempts'];
+        return $t;
+    }
+
+    /** One query for every row's targets; sets $row['targets'] keyed by network. */
+    private function attach_targets( array $rows ) {
+        global $wpdb;
+        if ( empty( $rows ) ) {
+            return $rows;
+        }
+        $ids = array_map( function ( $r ) {
+            return (int) $r['id'];
+        }, $rows );
+        $sql  = 'SELECT * FROM ' . self::targets_table_name() . ' WHERE row_id IN (' . implode( ',', array_fill( 0, count( $ids ), '%d' ) ) . ') ORDER BY id ASC';
+        $all  = (array) $wpdb->get_results( $wpdb->prepare( $sql, $ids ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $byId = array();
+        foreach ( $all as $t ) {
+            $t = self::hydrate_target( $t );
+            $byId[ $t['row_id'] ][ $t['network'] ] = $t;
+        }
+        foreach ( $rows as &$row ) {
+            $row['targets'] = isset( $byId[ $row['id'] ] ) ? $byId[ $row['id'] ] : array();
+        }
+        unset( $row );
+        return $rows;
     }
 
     public function get_row( $id ) {
         global $wpdb;
         $table = self::table_name();
-        return self::hydrate( $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d", $id ) ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $row   = self::hydrate( $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d", $id ) ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        if ( ! $row ) {
+            return null;
+        }
+        $rows = $this->attach_targets( array( $row ) );
+        return $rows[0];
+    }
+
+    /** @return array Targets of a row keyed by network. */
+    public function get_targets( $row_id ) {
+        $rows = $this->attach_targets( array( array( 'id' => (int) $row_id ) ) );
+        return $rows[0]['targets'];
     }
 
     /**
@@ -176,7 +275,8 @@ class Fediverse_Queue {
              . ' scheduled_at IS NULL, scheduled_at ASC, position ASC, published_at DESC, id DESC';
         $sql = $vals ? $wpdb->prepare( $sql, $vals ) : $sql; // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
-        return array_map( array( __CLASS__, 'hydrate' ), (array) $wpdb->get_results( $sql ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $rows = array_map( array( __CLASS__, 'hydrate' ), (array) $wpdb->get_results( $sql ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        return $this->attach_targets( $rows );
     }
 
     public function count_failed() {
@@ -185,49 +285,117 @@ class Fediverse_Queue {
         return (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table} WHERE status = 'failed'" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
     }
 
-    /** @return int New row id. */
-    public function insert_row( $data ) {
-        global $wpdb;
-        $now  = self::now_utc();
-        $data = array_merge( array(
-            'post_id'       => 0,
-            'content_type'  => Fediverse_Posting::DEFAULT_CONTENT_TYPE,
-            'template'      => '',
-            'gallery_ids'   => array(),
-            'alt_overrides' => array(),
-            'visibility'    => 'public',
-            'language'      => '',
-            'spoiler_text'  => '',
-            'is_sensitive'  => 0,
-            'trigger_type'  => 'queue',
-            'position'      => 0,
-            'scheduled_at'  => null,
-            'status'        => 'scheduled',
-            'created_by'    => get_current_user_id(),
-            'created_at'    => $now,
-            'updated_at'    => $now,
-        ), $data );
-        $data['gallery_ids']   = wp_json_encode( array_values( array_map( 'intval', (array) $data['gallery_ids'] ) ) );
-        $data['alt_overrides'] = wp_json_encode( (object) $data['alt_overrides'] );
-        $wpdb->insert( self::table_name(), $data );
-        return (int) $wpdb->insert_id;
-    }
-
-    public function update_row( $id, $data ) {
-        global $wpdb;
+    /** JSON-encode the array columns in place. */
+    private static function encode_columns( array $data ) {
         if ( array_key_exists( 'gallery_ids', $data ) ) {
             $data['gallery_ids'] = wp_json_encode( array_values( array_map( 'intval', (array) $data['gallery_ids'] ) ) );
         }
         if ( array_key_exists( 'alt_overrides', $data ) ) {
             $data['alt_overrides'] = wp_json_encode( (object) $data['alt_overrides'] );
         }
+        if ( array_key_exists( 'network_templates', $data ) ) {
+            $data['network_templates'] = wp_json_encode( (object) array_filter( array_map( 'strval', (array) $data['network_templates'] ), 'strlen' ) );
+        }
+        return $data;
+    }
+
+    /**
+     * @param array $data Row columns plus `destinations` (network ids; absent = the Settings default).
+     * @return int New row id.
+     */
+    public function insert_row( $data ) {
+        global $wpdb;
+        $now          = self::now_utc();
+        $destinations = array_key_exists( 'destinations', $data ) ? (array) $data['destinations'] : $this->plugin->default_destinations();
+        unset( $data['destinations'] );
+        $data = array_merge( array(
+            'post_id'           => 0,
+            'content_type'      => Fediverse_Posting::DEFAULT_CONTENT_TYPE,
+            'template'          => '',
+            'network_templates' => array(),
+            'gallery_ids'       => array(),
+            'alt_overrides'     => array(),
+            'visibility'        => 'public',
+            'language'          => '',
+            'spoiler_text'      => '',
+            'is_sensitive'      => 0,
+            'sensitive_label'   => '',
+            'trigger_type'      => 'queue',
+            'position'          => 0,
+            'scheduled_at'      => null,
+            'status'            => 'scheduled',
+            'created_by'        => get_current_user_id(),
+            'created_at'        => $now,
+            'updated_at'        => $now,
+        ), $data );
+        $wpdb->insert( self::table_name(), self::encode_columns( $data ) );
+        $id = (int) $wpdb->insert_id;
+        $this->sync_targets( $id, $destinations );
+        return $id;
+    }
+
+    /** @param array $data Row columns; `destinations` (network ids) syncs the targets. */
+    public function update_row( $id, $data ) {
+        global $wpdb;
+        if ( array_key_exists( 'destinations', $data ) ) {
+            $this->sync_targets( (int) $id, (array) $data['destinations'] );
+            unset( $data['destinations'] );
+        }
         $data['updated_at'] = self::now_utc();
-        return false !== $wpdb->update( self::table_name(), $data, array( 'id' => (int) $id ) );
+        return false !== $wpdb->update( self::table_name(), self::encode_columns( $data ), array( 'id' => (int) $id ) );
+    }
+
+    /**
+     * Make the row's targets match the ticked networks: new ones start
+     * pending, failed ones ticked again go back to pending (the row was just
+     * edited), pending ones unticked disappear. Published and removed targets
+     * are history and are never touched here.
+     */
+    private function sync_targets( $row_id, array $destinations ) {
+        global $wpdb;
+        $table        = self::targets_table_name();
+        $destinations = array_values( array_unique( array_filter( array_map( 'sanitize_key', $destinations ) ) ) );
+        $now          = self::now_utc();
+        $existing     = $this->get_targets( $row_id );
+
+        foreach ( $destinations as $network ) {
+            if ( ! isset( $existing[ $network ] ) ) {
+                $wpdb->insert( $table, array( 'row_id' => (int) $row_id, 'network' => $network, 'status' => 'pending', 'updated_at' => $now ) );
+            } elseif ( 'failed' === $existing[ $network ]['status'] ) {
+                $this->update_target( $existing[ $network ]['id'], array( 'status' => 'pending', 'attempts' => 0, 'retry_at' => null, 'error_message' => null ) );
+            }
+        }
+        foreach ( $existing as $network => $target ) {
+            if ( 'pending' === $target['status'] && ! in_array( $network, $destinations, true ) ) {
+                $wpdb->delete( $table, array( 'id' => $target['id'] ), array( '%d' ) );
+            }
+        }
+    }
+
+    /** A row with no targets at all (should not happen) gets the default ones. */
+    private function ensure_targets( array &$row ) {
+        if ( empty( $row['targets'] ) ) {
+            $this->sync_targets( $row['id'], $this->plugin->default_destinations() );
+            $row['targets'] = $this->get_targets( $row['id'] );
+        }
+    }
+
+    public function update_target( $target_id, array $data ) {
+        global $wpdb;
+        $data['updated_at'] = self::now_utc();
+        return false !== $wpdb->update( self::targets_table_name(), $data, array( 'id' => (int) $target_id ) );
     }
 
     public function delete_row( $id ) {
         global $wpdb;
+        $wpdb->delete( self::targets_table_name(), array( 'row_id' => (int) $id ), array( '%d' ) );
         $wpdb->delete( self::table_name(), array( 'id' => (int) $id ), array( '%d' ) );
+    }
+
+    /** Targets whose row is gone (post deleted, history cleaned). */
+    private function delete_orphan_targets() {
+        global $wpdb;
+        $wpdb->query( 'DELETE t FROM ' . self::targets_table_name() . ' t LEFT JOIN ' . self::table_name() . ' q ON q.id = t.row_id WHERE q.id IS NULL' ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
     }
 
 
@@ -367,18 +535,28 @@ class Fediverse_Queue {
     /** wp-cron, every 5 minutes: free stuck rows, then send one due row. */
     public function process_queue() {
         global $wpdb;
-        $table = self::table_name();
+        $table   = self::table_name();
+        $targets = self::targets_table_name();
+        $now     = self::now_utc();
 
-        // PHP died mid-send: put it back. Same row id → same Idempotency-Key → no double post.
+        // PHP died mid-send: put the row back. Its pending targets count one
+        // attempt, so Bluesky checks for an identical recent post first.
         $stuck = gmdate( 'Y-m-d H:i:s', time() - self::STUCK_MINUTES * MINUTE_IN_SECONDS );
-        $wpdb->query( $wpdb->prepare( "UPDATE {$table} SET status = 'scheduled' WHERE status = 'processing' AND updated_at < %s", $stuck ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $wpdb->query( $wpdb->prepare( "UPDATE {$targets} t JOIN {$table} q ON q.id = t.row_id SET t.attempts = GREATEST(t.attempts, 1), t.updated_at = %s WHERE q.status = 'processing' AND q.updated_at < %s AND t.status = 'pending'", $now, $stuck ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $wpdb->query( $wpdb->prepare( "UPDATE {$table} SET status = 'scheduled', updated_at = %s WHERE status = 'processing' AND updated_at < %s", $now, $stuck ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 
-        if ( ! $this->plugin->is_connected() ) {
+        $connected = array_keys( $this->plugin->connected_networks() );
+        if ( empty( $connected ) ) {
             return;
         }
 
-        $paused_triggers = $this->is_enabled() ? '' : " AND trigger_type NOT IN ('queue','at')";
-        $id              = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$table} WHERE status = 'scheduled' AND scheduled_at IS NOT NULL AND scheduled_at <= %s{$paused_triggers} ORDER BY scheduled_at ASC, id ASC LIMIT 1", self::now_utc() ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $paused_triggers = $this->is_enabled() ? '' : " AND q.trigger_type NOT IN ('queue','at')";
+        $in              = implode( ',', array_fill( 0, count( $connected ), '%s' ) );
+        $sql             = "SELECT q.id FROM {$table} q JOIN {$targets} t ON t.row_id = q.id
+            WHERE q.status = 'scheduled' AND q.scheduled_at IS NOT NULL AND q.scheduled_at <= %s{$paused_triggers}
+              AND t.status = 'pending' AND t.network IN ({$in}) AND (t.retry_at IS NULL OR t.retry_at <= %s)
+            ORDER BY q.scheduled_at ASC, q.id ASC LIMIT 1";
+        $id = $wpdb->get_var( $wpdb->prepare( $sql, array_merge( array( $now ), $connected, array( $now ) ) ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         if ( $id ) {
             $this->send_row( (int) $id );
@@ -386,20 +564,22 @@ class Fediverse_Queue {
     }
 
     /**
-     * Claim and send one row. Safe to call from cron, a single event and AJAX.
+     * Claim and send one row to every due target. Safe to call from cron, a
+     * single event and AJAX.
      *
-     * @return array|WP_Error { id, url } on success.
+     * @return array|WP_Error { id, url (first published), published (network => result), failed (network => message) }
      */
     public function send_row( $id ) {
         global $wpdb;
-        $table = self::table_name();
+        $table     = self::table_name();
+        $connected = $this->plugin->connected_networks();
 
         // Leave the row as it is: it goes out once an account is connected.
-        if ( ! $this->plugin->is_connected() ) {
-            return new WP_Error( 'fediverse_not_connected', __( 'Not connected to a fediverse account. Connect one in Fediverse → Settings.', 'wp-fediverse-posting' ) );
+        if ( empty( $connected ) ) {
+            return new WP_Error( 'fediverse_not_connected', __( 'No account is connected. Connect one in Fediverse → Settings.', 'wp-fediverse-posting' ) );
         }
 
-        $claimed =$wpdb->query( $wpdb->prepare( "UPDATE {$table} SET status = 'processing', updated_at = %s WHERE id = %d AND status = 'scheduled'", self::now_utc(), $id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $claimed = $wpdb->query( $wpdb->prepare( "UPDATE {$table} SET status = 'processing', updated_at = %s WHERE id = %d AND status = 'scheduled'", self::now_utc(), $id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
         if ( 1 !== (int) $claimed ) {
             return new WP_Error( 'fediverse_claimed', __( 'This post is already being sent or is not scheduled.', 'wp-fediverse-posting' ) );
         }
@@ -409,84 +589,124 @@ class Fediverse_Queue {
         }
         ignore_user_abort( true );
 
-        $row    = $this->get_row( $id );
-        $plugin = $this->plugin;
-        $post   = null;
+        $row = $this->get_row( $id );
+        $this->ensure_targets( $row );
+        $post = null;
 
         if ( $row['post_id'] ) {
             $post = get_post( $row['post_id'] );
             if ( ! $post || 'publish' !== $post->post_status || '' !== $post->post_password ) {
-                return $this->fail( $row, new WP_Error( 'fediverse_not_public', __( 'The WordPress post is not public (draft, private, password-protected or deleted).', 'wp-fediverse-posting' ), array( 'retryable' => false ) ) );
+                return $this->fail( $row, new WP_Error( 'fediverse_not_public', __( 'The WordPress post is not public (draft, private, password-protected or deleted).', 'wp-fediverse-posting' ) ) );
             }
         }
 
-        $text      = $plugin->render_template( $row['template'], $post );
-        $media_ids = $plugin->resolve_media_ids( $row, $post );
-        $limits    = $plugin->instance_limits();
-
-        if ( '' === $text && empty( $media_ids ) ) {
-            return $this->fail( $row, new WP_Error( 'fediverse_empty', __( 'Nothing to send: the text is empty and there are no images.', 'wp-fediverse-posting' ), array( 'retryable' => false ) ) );
+        $now = time();
+        $due = array_filter( $row['targets'], function ( $t ) use ( $connected, $now ) {
+            return 'pending' === $t['status'] && isset( $connected[ $t['network'] ] )
+                && ( ! $t['retry_at'] || strtotime( $t['retry_at'] . ' UTC' ) <= $now );
+        } );
+        if ( empty( $due ) ) {
+            $this->settle_row( $row );
+            return new WP_Error( 'fediverse_nothing_due', __( 'Nothing to send right now: the remaining networks are not connected or are waiting to retry.', 'wp-fediverse-posting' ) );
         }
-        $chars = $plugin->count_characters( $text );
+
+        $out = array( 'id' => '', 'url' => '', 'published' => array(), 'failed' => array() );
+        foreach ( $due as $network_id => $target ) {
+            $result = $this->send_target( $row, $target, $post, $connected[ $network_id ] );
+            if ( is_wp_error( $result ) ) {
+                $out['failed'][ $network_id ] = $result->get_error_message();
+            } else {
+                $out['published'][ $network_id ] = $result;
+                if ( '' === $out['url'] ) {
+                    $out['id']  = $result['id'];
+                    $out['url'] = $result['url'];
+                }
+            }
+        }
+
+        $this->settle_row( $row );
+
+        if ( empty( $out['published'] ) ) {
+            return new WP_Error( 'fediverse_send_failed', implode( ' ', $this->network_messages( $out['failed'] ) ), $out );
+        }
+        return $out;
+    }
+
+    /** "Bluesky: message" lines. */
+    private function network_messages( array $by_network ) {
+        $lines = array();
+        foreach ( $by_network as $network_id => $message ) {
+            $network = $this->plugin->network( $network_id );
+            $lines[] = ( $network ? $network->label() : $network_id ) . ': ' . $message;
+        }
+        return $lines;
+    }
+
+    /** Render, prepare the images and publish one target. */
+    private function send_target( array $row, array $target, $post, Fediverse_Network $network ) {
+        $plugin = $this->plugin;
+        $limits = $network->limits();
+
+        $text  = $plugin->render_template( $network->template_for_row( $row ), $post );
+        $media = $plugin->resolve_media_ids( $row, $post, $limits );
+        if ( '' === $text && empty( $media ) ) {
+            return $this->fail_target( $row, $target, new WP_Error( 'fediverse_empty', __( 'Nothing to send: the text is empty and there are no images.', 'wp-fediverse-posting' ), array( 'retryable' => false ) ) );
+        }
+
+        $chars = $network->count_characters( $text );
         if ( $chars > $limits['max_characters'] ) {
-            /* translators: 1: characters used, 2: server limit */
-            return $this->fail( $row, new WP_Error( 'fediverse_too_long', sprintf( __( 'The text is %1$d characters; the server allows %2$d.', 'wp-fediverse-posting' ), $chars, $limits['max_characters'] ), array( 'retryable' => false ) ) );
+            if ( $limits['hard_limit'] ) {
+                /* translators: 1: characters used, 2: server limit */
+                return $this->fail_target( $row, $target, new WP_Error( 'fediverse_too_long', sprintf( __( 'The text is %1$d characters; the server allows %2$d.', 'wp-fediverse-posting' ), $chars, $limits['max_characters'] ), array( 'retryable' => false ) ) );
+            }
+            $text = $network->truncate( $text, $limits['max_characters'] );
+            $plugin->log( "Row {$row['id']}/{$network->id()}: text shortened from {$chars} to {$limits['max_characters']}.", 'INFO' );
         }
 
-        // Upload every image first: all or nothing.
-        $uploaded = array();
-        foreach ( $media_ids as $att_id ) {
-            $file = $plugin->prepare_media_file( $att_id );
+        $files = array();
+        foreach ( $media as $att_id ) {
+            $file = $plugin->prepare_media_file( $att_id, $limits );
             if ( is_wp_error( $file ) ) {
-                return $this->fail( $row, $file );
+                $this->delete_temp_files( $files );
+                return $this->fail_target( $row, $target, $file );
             }
-            $media_id = $plugin->upload_media( $file['path'], $file['mime'], $plugin->alt_text_for( $att_id, $row ) );
-            if ( $file['temp'] ) {
-                wp_delete_file( $file['path'] );
-            }
-            if ( is_wp_error( $media_id ) ) {
-                return $this->fail( $row, $media_id );
-            }
-            $uploaded[] = $media_id;
+            $file['attachment_id'] = $att_id;
+            $file['alt']           = $plugin->alt_text_for( $att_id, $row, $limits['alt_max'] );
+            $files[]               = $file;
         }
 
-        $params = array(
-            'status'     => $text,
-            'visibility' => $row['visibility'],
-        );
-        $language = $plugin->resolve_language( $row['language'], $post );
-        if ( '' !== $language ) {
-            $params['language'] = $language;
-        }
-        if ( '' !== $row['spoiler_text'] ) {
-            $params['spoiler_text'] = $row['spoiler_text'];
-        }
-        if ( $uploaded ) {
-            $params['media_ids'] = $uploaded;
-            $params['sensitive'] = ( $row['is_sensitive'] || '' !== $row['spoiler_text'] );
-        }
-        $params = apply_filters( 'fediverse_posting_status_params', $params, $row, $post );
-
-        $result = $plugin->post_status( $params, self::idempotency_key( $row['id'] ) );
+        $result = $network->publish( $row, $post, $text, $files, array( 'attempts' => $target['attempts'] ) );
+        $this->delete_temp_files( $files );
         if ( is_wp_error( $result ) ) {
-            return $this->fail( $row, $result );
+            return $this->fail_target( $row, $target, $result );
         }
 
-        $this->update_row( $row['id'], array(
+        // First thing after success, so a crash from here on can never resend it.
+        $this->update_target( $target['id'], array(
             'status'        => 'published',
             'remote_id'     => $result['id'],
             'remote_url'    => $result['url'],
             'published_at'  => self::now_utc(),
+            'attempts'      => $target['attempts'] + 1,
+            'retry_at'      => null,
             'error_message' => null,
-            'attempts'      => $row['attempts'] + 1,
         ) );
         if ( $row['post_id'] ) {
             update_post_meta( $row['post_id'], self::POSTED_META, time() );
         }
-        $plugin->log( "Row {$row['id']} published: {$result['url']}", 'INFO' );
-        do_action( 'fediverse_posting_published', $result, $row, $post );
+        $plugin->log( "Row {$row['id']} published on {$network->id()}: {$result['url']}", 'INFO' );
+        /** After a post went out. $result['network'] names the network; so does the 4th argument. */
+        do_action( 'fediverse_posting_published', $result, $row, $post, $network->id() );
 
         return $result;
+    }
+
+    private function delete_temp_files( array $files ) {
+        foreach ( $files as $file ) {
+            if ( ! empty( $file['temp'] ) ) {
+                wp_delete_file( $file['path'] );
+            }
+        }
     }
 
     public static function idempotency_key( $row_id ) {
@@ -494,12 +714,13 @@ class Fediverse_Queue {
     }
 
     /**
-     * Retry network, 429 and 5xx errors (5, 15, 30 min); anything else, or the
-     * last attempt, fails the row and emails the admin.
+     * One target failed. Network, 429 and 5xx errors are retried (5, 15, 30
+     * min) through the target's retry_at; anything else, or the last attempt,
+     * marks the target failed. settle_row() then decides the row's state.
      */
-    private function fail( $row, WP_Error $error ) {
+    private function fail_target( array $row, array $target, WP_Error $error ) {
         $data      = (array) $error->get_error_data();
-        $attempts  = $row['attempts'] + 1;
+        $attempts  = $target['attempts'] + 1;
         $retryable = ! empty( $data['retryable'] ) && $attempts < self::MAX_ATTEMPTS;
         $message   = $error->get_error_message();
 
@@ -510,24 +731,103 @@ class Fediverse_Queue {
             if ( ! empty( $data['retry_at'] ) && $data['retry_at'] > $when ) {
                 $when = (int) $data['retry_at'];
             }
-            $this->update_row( $row['id'], array(
-                'status'        => 'scheduled',
-                'scheduled_at'  => gmdate( 'Y-m-d H:i:s', $when ),
+            $this->update_target( $target['id'], array(
+                'status'        => 'pending',
                 'attempts'      => $attempts,
+                'retry_at'      => gmdate( 'Y-m-d H:i:s', $when ),
                 /* translators: %s: error message */
                 'error_message' => sprintf( __( 'Retrying: %s', 'wp-fediverse-posting' ), $message ),
             ) );
-            $this->plugin->log( "Row {$row['id']} attempt {$attempts} failed, retrying: {$message}", 'ERROR' );
+            $this->plugin->log( "Row {$row['id']}/{$target['network']} attempt {$attempts} failed, retrying: {$message}", 'ERROR' );
         } else {
-            $this->update_row( $row['id'], array(
+            $this->update_target( $target['id'], array(
                 'status'        => 'failed',
                 'attempts'      => $attempts,
+                'retry_at'      => null,
                 'error_message' => $message,
             ) );
-            $this->plugin->log( "Row {$row['id']} failed: {$message}", 'ERROR' );
-            $this->email_failure( $row, $message );
+            $this->plugin->log( "Row {$row['id']}/{$target['network']} failed: {$message}", 'ERROR' );
         }
         return $error;
+    }
+
+    /** The whole row cannot go out (post not public…): every pending target fails. */
+    private function fail( array $row, WP_Error $error ) {
+        foreach ( $row['targets'] as $target ) {
+            if ( 'pending' === $target['status'] ) {
+                $this->update_target( $target['id'], array( 'status' => 'failed', 'attempts' => $target['attempts'] + 1, 'retry_at' => null, 'error_message' => $error->get_error_message() ) );
+            }
+        }
+        $this->plugin->log( "Row {$row['id']} failed: " . $error->get_error_message(), 'ERROR' );
+        $this->settle_row( $row );
+        return $error;
+    }
+
+    /**
+     * Row state from its targets, after a send pass:
+     *   a target waiting to retry        → scheduled at the earliest retry_at
+     *   a pending target (not connected) → scheduled, time unchanged
+     *   a failed target                  → failed (one email, naming the networks)
+     *   all published / removed          → published (removed when all were deleted)
+     * Row attempts = the highest target attempts, so recalculate_schedule()
+     * keeps leaving retrying rows alone.
+     */
+    private function settle_row( array $row ) {
+        $targets   = $this->get_targets( $row['id'] );
+        $retry_at  = array();
+        $pending   = 0;
+        $failed    = array();
+        $published = 0;
+        $removed   = 0;
+        $attempts  = 0;
+        foreach ( $targets as $network_id => $t ) {
+            $attempts = max( $attempts, $t['attempts'] );
+            switch ( $t['status'] ) {
+                case 'pending':
+                    $pending++;
+                    if ( $t['retry_at'] ) {
+                        $retry_at[] = $t['retry_at'];
+                    }
+                    break;
+                case 'failed':
+                    $failed[ $network_id ] = (string) $t['error_message'];
+                    break;
+                case 'published':
+                    $published++;
+                    break;
+                case 'removed':
+                    $removed++;
+                    break;
+            }
+        }
+
+        $data = array( 'attempts' => $attempts );
+        if ( $retry_at ) {
+            sort( $retry_at );
+            $data['status']        = 'scheduled';
+            $data['scheduled_at']  = $retry_at[0];
+            $data['error_message'] = implode( "\n", $this->network_messages( array_filter( array_map( function ( $t ) {
+                return 'pending' === $t['status'] && $t['retry_at'] ? (string) $t['error_message'] : '';
+            }, $targets ) ) ) );
+        } elseif ( $pending ) {
+            $data['status']        = 'scheduled';
+            $data['error_message'] = null;
+        } elseif ( $failed ) {
+            $data['status']        = 'failed';
+            $data['error_message'] = implode( "\n", $this->network_messages( $failed ) );
+            if ( 'failed' !== $row['status'] ) {
+                $this->email_failure( $row, $data['error_message'] );
+            }
+        } elseif ( $removed && ! $published ) {
+            $data['status'] = 'removed';
+        } else {
+            $data['status']        = 'published';
+            $data['error_message'] = null;
+            if ( empty( $row['published_at'] ) ) {
+                $data['published_at'] = self::now_utc();
+            }
+        }
+        $this->update_row( $row['id'], $data );
     }
 
     private function email_failure( $row, $message ) {
@@ -539,7 +839,7 @@ class Fediverse_Queue {
         $subject = sprintf( __( '[%s] A fediverse post failed', 'wp-fediverse-posting' ), wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES ) );
         $body    = sprintf(
             /* translators: 1: post title, 2: error message, 3: Planner URL */
-            __( "This post could not be shared on the fediverse:\n\n%1\$s\n\nReason: %2\$s\n\nRetry or edit it in the Planner:\n%3\$s", 'wp-fediverse-posting' ),
+            __( "This post could not be shared:\n\n%1\$s\n\nReason: %2\$s\n\nRetry or edit it in the Planner:\n%3\$s", 'wp-fediverse-posting' ),
             wp_specialchars_decode( $title, ENT_QUOTES ),
             $message,
             admin_url( 'admin.php?page=fediverse-posting' )
@@ -605,18 +905,28 @@ class Fediverse_Queue {
     public function on_delete_post( $post_id ) {
         global $wpdb;
         $wpdb->query( $wpdb->prepare( 'DELETE FROM ' . self::table_name() . " WHERE post_id = %d AND status NOT IN ('published','removed','processing')", $post_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->delete_orphan_targets();
     }
 
-    /** Row fields from the Settings defaults. */
+    /** Row fields from the Settings defaults (targets: default_destinations). */
     public function default_row_data( $post_id, $trigger ) {
-        $type = (string) $this->plugin->get_setting( 'default_content_type' );
+        $type      = (string) $this->plugin->get_setting( 'default_content_type' );
+        $post_type = (string) get_post_type( $post_id );
+        $templates = array();
+        foreach ( $this->plugin->networks() as $network ) {
+            $own = $this->plugin->network_template_for( $network->id(), $post_type );
+            if ( '' !== $own ) {
+                $templates[ $network->id() ] = $own;
+            }
+        }
         return array(
-            'post_id'      => (int) $post_id,
-            'content_type' => array_key_exists( $type, Fediverse_Posting::content_types() ) ? $type : Fediverse_Posting::DEFAULT_CONTENT_TYPE,
-            'template'     => $this->plugin->default_template_for( (string) get_post_type( $post_id ) ),
-            'visibility'   => (string) $this->plugin->get_setting( 'default_visibility' ),
-            'language'     => '',
-            'trigger_type' => $trigger,
+            'post_id'           => (int) $post_id,
+            'content_type'      => array_key_exists( $type, Fediverse_Posting::content_types() ) ? $type : Fediverse_Posting::DEFAULT_CONTENT_TYPE,
+            'template'          => $this->plugin->default_template_for( $post_type ),
+            'network_templates' => $templates,
+            'visibility'        => (string) $this->plugin->get_setting( 'default_visibility' ),
+            'language'          => '',
+            'trigger_type'      => $trigger,
         );
     }
 
@@ -629,6 +939,7 @@ class Fediverse_Queue {
         global $wpdb;
         $cutoff = gmdate( 'Y-m-d H:i:s', time() - self::HISTORY_DAYS * DAY_IN_SECONDS );
         $wpdb->query( $wpdb->prepare( 'DELETE FROM ' . self::table_name() . " WHERE status IN ('published','failed','removed') AND updated_at < %s", $cutoff ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->delete_orphan_targets();
         $this->plugin->trim_log();
     }
 

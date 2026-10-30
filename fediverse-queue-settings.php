@@ -48,32 +48,46 @@ function fediverse_utc_to_local_input( $utc ) {
 //  SETTINGS PIECES
 // =========================================================================
 
-/** Connection block (outside the options form: it posts to admin-post.php). */
+/** Connection block (outside the options form: it posts to admin-post.php). One card per network. */
 function fediverse_render_connection( Fediverse_Posting $plugin ) {
-    $account = $plugin->get_account();
+    foreach ( $plugin->networks() as $network ) {
+        $renderer = 'fediverse_render_connection_' . $network->id();
+        if ( function_exists( $renderer ) ) {
+            $renderer( $network );
+        }
+    }
+}
+
+/** Avatar, name, handle and the Connected badge: shared by every network card. */
+function fediverse_render_connected_account( Fediverse_Network $network, $limits_text ) {
+    $account = $network->account();
+    ?>
+    <div class="fedi-account">
+        <?php if ( ! empty( $account['avatar'] ) ) : ?>
+            <img class="fedi-account__avatar" src="<?php echo esc_url( $account['avatar'] ); ?>" alt="" width="48" height="48">
+        <?php endif; ?>
+        <div class="fedi-account__who">
+            <strong><?php echo esc_html( isset( $account['display_name'] ) ? $account['display_name'] : $network->label() ); ?></strong>
+            <?php if ( ! empty( $account['acct'] ) ) : ?>
+                <a href="<?php echo esc_url( isset( $account['url'] ) ? $account['url'] : '' ); ?>" target="_blank" rel="noopener">@<?php echo esc_html( $account['acct'] ); ?></a>
+            <?php endif; ?>
+            <span class="fedi-muted"><?php echo esc_html( $limits_text ); ?></span>
+        </div>
+        <span class="fedi-badge fedi-badge--published">✓ <?php esc_html_e( 'Connected', 'wp-fediverse-posting' ); ?></span>
+    </div>
+    <?php
+}
+
+function fediverse_render_connection_mastodon( Fediverse_Network_Mastodon $network ) {
     $post_to = admin_url( 'admin-post.php' );
     ?>
-    <div class="fedi-card fedi-connection">
-        <h2><?php esc_html_e( 'Connection', 'wp-fediverse-posting' ); ?></h2>
-        <?php if ( $plugin->is_connected() && $account ) :
-            $limits = $plugin->instance_limits(); ?>
-            <div class="fedi-account">
-                <?php if ( ! empty( $account['avatar'] ) ) : ?>
-                    <img class="fedi-account__avatar" src="<?php echo esc_url( $account['avatar'] ); ?>" alt="" width="48" height="48">
-                <?php endif; ?>
-                <div class="fedi-account__who">
-                    <strong><?php echo esc_html( $account['display_name'] ); ?></strong>
-                    <a href="<?php echo esc_url( $account['url'] ); ?>" target="_blank" rel="noopener">@<?php echo esc_html( $account['acct'] ); ?></a>
-                    <span class="fedi-muted">
-                        <?php
-                        /* translators: 1: characters, 2: images */
-                        echo esc_html( sprintf( __( 'Up to %1$d characters and %2$d images per post', 'wp-fediverse-posting' ), $limits['max_characters'], $limits['max_media'] ) );
-                        ?>
-                    </span>
-                </div>
-                <span class="fedi-badge fedi-badge--published">✓ <?php esc_html_e( 'Connected', 'wp-fediverse-posting' ); ?></span>
-            </div>
-            <?php if ( Fediverse_Posting::uses_constants() ) : ?>
+    <div class="fedi-card fedi-connection" data-network="mastodon">
+        <h2><?php esc_html_e( 'Mastodon', 'wp-fediverse-posting' ); ?></h2>
+        <?php if ( $network->is_connected() && $network->account() ) :
+            $limits = $network->limits();
+            /* translators: 1: characters, 2: images */
+            fediverse_render_connected_account( $network, sprintf( __( 'Up to %1$d characters and %2$d images per post', 'wp-fediverse-posting' ), $limits['max_characters'], $limits['max_media'] ) ); ?>
+            <?php if ( $network->uses_constants() ) : ?>
                 <p class="description"><?php echo wp_kses( __( 'Set in <code>wp-config.php</code> (FEDIVERSE_POSTING_INSTANCE / FEDIVERSE_POSTING_TOKEN). Change it there.', 'wp-fediverse-posting' ), array( 'code' => array() ) ); ?></p>
             <?php else : ?>
                 <form method="post" action="<?php echo esc_url( $post_to ); ?>">
@@ -83,7 +97,7 @@ function fediverse_render_connection( Fediverse_Posting $plugin ) {
                 </form>
             <?php endif; ?>
 
-        <?php elseif ( $plugin->is_connected() ) : ?>
+        <?php elseif ( $network->is_connected() ) : ?>
             <p><?php esc_html_e( 'A token is set in wp-config.php but its account has not been checked yet.', 'wp-fediverse-posting' ); ?></p>
 
         <?php else : ?>
@@ -92,7 +106,7 @@ function fediverse_render_connection( Fediverse_Posting $plugin ) {
                 <input type="hidden" name="action" value="fediverse_connect">
                 <?php wp_nonce_field( 'fediverse_connect' ); ?>
                 <label for="fedi-instance"><?php esc_html_e( 'Server', 'wp-fediverse-posting' ); ?></label>
-                <input type="text" id="fedi-instance" name="instance" class="regular-text" placeholder="mastodon.social" value="<?php echo esc_attr( (string) $plugin->get_setting( 'instance' ) ); ?>" autocomplete="off" spellcheck="false" required>
+                <input type="text" id="fedi-instance" name="instance" class="regular-text" placeholder="mastodon.social" value="<?php echo esc_attr( (string) $network->settings()['instance'] ); ?>" autocomplete="off" spellcheck="false" required>
                 <button type="submit" class="button button-primary"><?php esc_html_e( 'Connect', 'wp-fediverse-posting' ); ?></button>
                 <p class="description"><?php esc_html_e( 'The part after the second @ in your handle. You will be sent to your server to approve access, then brought back here.', 'wp-fediverse-posting' ); ?></p>
             </form>
@@ -112,6 +126,53 @@ function fediverse_render_connection( Fediverse_Posting $plugin ) {
                     <button type="submit" class="button"><?php esc_html_e( 'Check and save', 'wp-fediverse-posting' ); ?></button>
                 </form>
             </details>
+        <?php endif; ?>
+    </div>
+    <?php
+}
+
+function fediverse_render_connection_bluesky( Fediverse_Network_Bluesky $network ) {
+    $post_to  = admin_url( 'admin-post.php' );
+    $settings = $network->settings();
+    ?>
+    <div class="fedi-card fedi-connection" data-network="bluesky">
+        <h2><?php esc_html_e( 'Bluesky', 'wp-fediverse-posting' ); ?></h2>
+        <?php if ( $network->is_connected() ) :
+            $limits = $network->limits();
+            /* translators: 1: characters, 2: images */
+            fediverse_render_connected_account( $network, sprintf( __( 'Up to %1$d characters and %2$d images per post', 'wp-fediverse-posting' ), $limits['max_characters'], $limits['max_media'] ) ); ?>
+            <?php if ( $network->uses_constants() ) : ?>
+                <p class="description"><?php echo wp_kses( __( 'Set in <code>wp-config.php</code> (FEDIVERSE_POSTING_BLUESKY_HANDLE / FEDIVERSE_POSTING_BLUESKY_APP_PASSWORD). Change it there.', 'wp-fediverse-posting' ), array( 'code' => array() ) ); ?></p>
+            <?php else : ?>
+                <form method="post" action="<?php echo esc_url( $post_to ); ?>">
+                    <input type="hidden" name="action" value="fediverse_bluesky_disconnect">
+                    <?php wp_nonce_field( 'fediverse_bluesky_disconnect' ); ?>
+                    <button type="submit" class="button"><?php esc_html_e( 'Disconnect', 'wp-fediverse-posting' ); ?></button>
+                </form>
+            <?php endif; ?>
+
+        <?php else : ?>
+            <p><?php esc_html_e( 'Post to your Bluesky account with an app password: a separate password just for this site, which you can revoke any time.', 'wp-fediverse-posting' ); ?></p>
+            <ol>
+                <li><?php echo wp_kses( __( 'On bsky.app open <strong>Settings → Privacy and Security → App Passwords</strong> and add one (no need to allow direct messages).', 'wp-fediverse-posting' ), array( 'strong' => array() ) ); ?></li>
+                <li><?php esc_html_e( 'Paste it here with your handle. The plugin keeps it on this site to renew the session when it expires.', 'wp-fediverse-posting' ); ?></li>
+            </ol>
+            <form method="post" action="<?php echo esc_url( $post_to ); ?>" class="fedi-connect-form fedi-connect-form--stacked">
+                <input type="hidden" name="action" value="fediverse_bluesky_connect">
+                <?php wp_nonce_field( 'fediverse_bluesky_connect' ); ?>
+                <p><label for="fedi-bsky-handle"><?php esc_html_e( 'Handle', 'wp-fediverse-posting' ); ?></label>
+                    <input type="text" id="fedi-bsky-handle" name="handle" class="regular-text" placeholder="you.bsky.social" value="<?php echo esc_attr( (string) $settings['handle'] ); ?>" autocomplete="off" spellcheck="false" required></p>
+                <p><label for="fedi-bsky-password"><?php esc_html_e( 'App password', 'wp-fediverse-posting' ); ?></label>
+                    <input type="password" id="fedi-bsky-password" name="app_password" class="regular-text" placeholder="xxxx-xxxx-xxxx-xxxx" autocomplete="off" required></p>
+                <details class="fedi-token-fallback">
+                    <summary><?php esc_html_e( 'Self-hosted PDS?', 'wp-fediverse-posting' ); ?></summary>
+                    <p><label for="fedi-bsky-pds"><?php esc_html_e( 'PDS host', 'wp-fediverse-posting' ); ?></label>
+                        <input type="text" id="fedi-bsky-pds" name="pds" class="regular-text" placeholder="pds.example.com" value="<?php echo esc_attr( (string) $settings['pds'] ); ?>" autocomplete="off" spellcheck="false">
+                        <span class="description"><?php esc_html_e( 'Leave empty for accounts hosted by Bluesky.', 'wp-fediverse-posting' ); ?></span></p>
+                </details>
+                <p><button type="submit" class="button button-primary"><?php esc_html_e( 'Connect', 'wp-fediverse-posting' ); ?></button></p>
+            </form>
+            <p class="description"><?php echo wp_kses( __( 'On a site you manage with code, define <code>FEDIVERSE_POSTING_BLUESKY_HANDLE</code> and <code>FEDIVERSE_POSTING_BLUESKY_APP_PASSWORD</code> in <code>wp-config.php</code> instead.', 'wp-fediverse-posting' ), array( 'code' => array() ) ); ?></p>
         <?php endif; ?>
     </div>
     <?php
@@ -265,6 +326,47 @@ function fediverse_render_row_media( Fediverse_Posting $plugin, $row, $media_ids
     echo '</div>';
 }
 
+/** One line per target when a row goes to several networks: "Mastodon · Published". */
+function fediverse_render_targets( Fediverse_Posting $plugin, $row ) {
+    if ( count( $row['targets'] ) < 2 ) {
+        return;
+    }
+    $labels = array(
+        'pending'   => __( 'Pending', 'wp-fediverse-posting' ),
+        'published' => __( 'Published', 'wp-fediverse-posting' ),
+        'failed'    => __( 'Failed', 'wp-fediverse-posting' ),
+        'removed'   => __( 'Deleted', 'wp-fediverse-posting' ),
+    );
+    echo '<span class="fedi-targets">';
+    foreach ( $row['targets'] as $network_id => $target ) {
+        $network = $plugin->network( $network_id );
+        $status  = $target['status'];
+        $label   = isset( $labels[ $status ] ) ? $labels[ $status ] : $status;
+        if ( 'pending' === $status && ( ! $network || ! $network->is_connected() ) ) {
+            $label = __( 'Not connected', 'wp-fediverse-posting' );
+        } elseif ( 'pending' === $status && $target['retry_at'] ) {
+            $label = __( 'Retrying', 'wp-fediverse-posting' );
+        }
+        printf(
+            '<span class="fedi-target fedi-target--%s"><b>%s</b> %s</span>',
+            esc_attr( $status ),
+            esc_html( $network ? $network->label() : $network_id ),
+            esc_html( $label )
+        );
+    }
+    echo '</span>';
+}
+
+/** The networks of a row as "Mastodon, Bluesky" for the Type column. */
+function fediverse_targets_short( Fediverse_Posting $plugin, $row ) {
+    $out = array();
+    foreach ( $row['targets'] as $network_id => $target ) {
+        $network = $plugin->network( $network_id );
+        $out[]   = $network ? $network->label() : $network_id;
+    }
+    return implode( ', ', $out );
+}
+
 function fediverse_render_row( Fediverse_Queue $queue, $row, $context ) {
     $plugin    = $queue->plugin;
     $post      = $row['post_id'] ? get_post( $row['post_id'] ) : null;
@@ -272,8 +374,26 @@ function fediverse_render_row( Fediverse_Queue $queue, $row, $context ) {
     $long      = mb_strlen( $text ) > 200 || substr_count( $text, "\n" ) >= 3;
     $editable  = in_array( $row['status'], array( 'scheduled', 'waiting', 'paused', 'failed' ), true );
     $sortable  = 'planner' === $context && 'queue' === $row['trigger_type'] && 'scheduled' === $row['status'] && 0 === $row['attempts'];
-    $media_ids = $plugin->resolve_media_ids( $row, $post );
+
+    // Thumbnails: as many images as the most generous of the row's networks takes.
+    $limits = $plugin->default_limits();
+    foreach ( $row['targets'] as $network_id => $target ) {
+        $network = $plugin->network( $network_id );
+        if ( $network && $network->limits()['max_media'] > $limits['max_media'] ) {
+            $limits = $network->limits();
+        }
+    }
+    $media_ids = $plugin->resolve_media_ids( $row, $post, $limits );
     $images    = count( $media_ids );
+
+    // A network's own text, shown under the common one.
+    $own_texts = array();
+    foreach ( $row['network_templates'] as $network_id => $template ) {
+        $network = $plugin->network( $network_id );
+        if ( $network && isset( $row['targets'][ $network_id ] ) && '' !== trim( $template ) ) {
+            $own_texts[ $network->label() ] = $plugin->render_template( $template, $post );
+        }
+    }
     $type      = $row['post_id'] ? Fediverse_Posting::content_type_short( $row['content_type'] ) : ( $images ? Fediverse_Posting::content_type_short( 'gallery' ) : Fediverse_Posting::content_type_short( 'text' ) );
     if ( $images > 1 ) {
         $type .= ' (' . $images . ')';
@@ -320,25 +440,38 @@ function fediverse_render_row( Fediverse_Queue $queue, $row, $context ) {
                         <div class="fedi-row__text"><?php echo fediverse_linkify_text( $text ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside. ?></div>
                     <?php endif; ?>
 
-                    <?php if ( '' !== $row['spoiler_text'] ) : ?>
+                    <?php foreach ( $own_texts as $label => $own ) : ?>
+                        <div class="fedi-row__text fedi-row__text--own"><span class="fedi-row__own-label"><?php echo esc_html( $label ); ?></span> <?php echo fediverse_linkify_text( $own ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside. ?></div>
+                    <?php endforeach; ?>
+
+                    <?php if ( '' !== $row['spoiler_text'] && isset( $row['targets']['mastodon'] ) ) : ?>
                         <span class="fedi-row__cw"><?php /* translators: %s: content warning */ echo esc_html( sprintf( __( 'CW: %s', 'wp-fediverse-posting' ), $row['spoiler_text'] ) ); ?></span>
                     <?php endif; ?>
                     <?php if ( $row['error_message'] && in_array( $row['status'], array( 'failed', 'scheduled' ), true ) ) : ?>
-                        <span class="fedi-row__error"><?php echo esc_html( $row['error_message'] ); ?></span>
+                        <span class="fedi-row__error"><?php echo nl2br( esc_html( $row['error_message'] ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped before nl2br. ?></span>
                     <?php endif; ?>
                 </div>
                 <?php fediverse_render_row_media( $plugin, $row, $media_ids ); ?>
             </div>
         </td>
-        <td class="fedi-col-type"><?php echo esc_html( $type ); ?></td>
-        <td class="fedi-col-status"><?php echo fediverse_status_badge( $row ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside. ?></td>
+        <td class="fedi-col-type"><?php echo esc_html( $type ); ?><?php if ( count( $plugin->networks() ) > 1 ) : ?><br><span class="fedi-muted"><?php echo esc_html( fediverse_targets_short( $plugin, $row ) ); ?></span><?php endif; ?></td>
+        <td class="fedi-col-status"><?php echo fediverse_status_badge( $row ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside. ?><?php fediverse_render_targets( $plugin, $row ); ?></td>
         <td class="fedi-col-actions">
-            <?php if ( 'published' === $row['status'] && $row['remote_url'] ) : ?>
-                <a href="<?php echo esc_url( $row['remote_url'] ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'View ↗', 'wp-fediverse-posting' ); ?></a>
-                <button type="button" class="button-link fedi-danger-link" data-fedi-action="delete_remote"><?php esc_html_e( 'Delete on fediverse', 'wp-fediverse-posting' ); ?></button>
-            <?php endif; ?>
-            <?php if ( in_array( $row['status'], array( 'failed', 'paused' ), true ) && ( ! $post || 'publish' === $post->post_status ) ) : ?>
+            <?php $several = count( $row['targets'] ) > 1;
+            foreach ( $row['targets'] as $network_id => $target ) :
+                $network = $plugin->network( $network_id );
+                $name    = $network ? $network->label() : $network_id;
+                if ( 'published' === $target['status'] && $target['remote_url'] && in_array( $row['status'], array( 'published', 'failed' ), true ) ) : ?>
+                    <a href="<?php echo esc_url( $target['remote_url'] ); ?>" target="_blank" rel="noopener"><?php echo $several ? esc_html( sprintf( /* translators: %s: network */ __( 'View on %s ↗', 'wp-fediverse-posting' ), $name ) ) : esc_html__( 'View ↗', 'wp-fediverse-posting' ); ?></a>
+                    <button type="button" class="button-link fedi-danger-link" data-fedi-action="delete_remote" data-target="<?php echo esc_attr( $target['id'] ); ?>"><?php echo $several ? esc_html( sprintf( /* translators: %s: network */ __( 'Delete on %s', 'wp-fediverse-posting' ), $name ) ) : esc_html__( 'Delete on fediverse', 'wp-fediverse-posting' ); ?></button>
+                <?php elseif ( 'failed' === $target['status'] && 'failed' === $row['status'] && $several && ( ! $post || 'publish' === $post->post_status ) ) : ?>
+                    <button type="button" class="button button-small" data-fedi-action="retry" data-target="<?php echo esc_attr( $target['id'] ); ?>"><?php echo esc_html( sprintf( /* translators: %s: network */ __( 'Retry %s', 'wp-fediverse-posting' ), $name ) ); ?></button>
+                <?php endif;
+            endforeach; ?>
+            <?php if ( in_array( $row['status'], array( 'failed', 'paused' ), true ) && ! $several && ( ! $post || 'publish' === $post->post_status ) ) : ?>
                 <button type="button" class="button button-small" data-fedi-action="retry"><?php echo 'failed' === $row['status'] ? esc_html__( 'Retry now', 'wp-fediverse-posting' ) : esc_html__( 'Send now', 'wp-fediverse-posting' ); ?></button>
+            <?php elseif ( 'paused' === $row['status'] && $several && ( ! $post || 'publish' === $post->post_status ) ) : ?>
+                <button type="button" class="button button-small" data-fedi-action="retry"><?php esc_html_e( 'Send now', 'wp-fediverse-posting' ); ?></button>
             <?php endif; ?>
             <?php if ( $editable ) : ?>
                 <button type="button" class="button-link" data-fedi-action="edit"><?php esc_html_e( 'Edit', 'wp-fediverse-posting' ); ?></button>
@@ -482,8 +615,10 @@ function fediverse_render_auto_note( Fediverse_Queue $queue, $post ) {
  * editing a row that belongs to a WP post.
  */
 function fediverse_render_composer( Fediverse_Queue $queue, $context, $post ) {
-    $plugin = $queue->plugin;
-    $uid    = 'fedi-' . $context . '-' . ( $post ? $post->ID : 0 );
+    $plugin    = $queue->plugin;
+    $uid       = 'fedi-' . $context . '-' . ( $post ? $post->ID : 0 );
+    $connected = $plugin->connected_networks();
+    $bluesky   = $plugin->network( 'bluesky' );
     ?>
     <div class="fedi-composer" hidden data-mode="<?php echo $post ? 'post' : 'standalone'; ?>">
         <h3 class="fedi-composer__title">
@@ -493,6 +628,14 @@ function fediverse_render_composer( Fediverse_Queue $queue, $context, $post ) {
 
         <div class="fedi-composer__grid">
             <div class="fedi-composer__form">
+                <fieldset class="fedi-field fedi-destinations" <?php echo count( $connected ) < 2 ? 'hidden' : ''; ?>>
+                    <legend class="fedi-label"><?php esc_html_e( 'Share on', 'wp-fediverse-posting' ); ?></legend>
+                    <?php foreach ( $connected as $network ) :
+                        $account = $network->account(); ?>
+                        <label class="fedi-destination"><input type="checkbox" value="<?php echo esc_attr( $network->id() ); ?>" data-field="destinations"> <?php echo esc_html( $network->label() ); ?><?php if ( ! empty( $account['acct'] ) ) : ?> <span class="fedi-muted">@<?php echo esc_html( $account['acct'] ); ?></span><?php endif; ?></label>
+                    <?php endforeach; ?>
+                </fieldset>
+
                 <fieldset class="fedi-field fedi-types fedi-only-post">
                     <legend class="fedi-label"><?php esc_html_e( 'Content', 'wp-fediverse-posting' ); ?></legend>
                     <?php foreach ( Fediverse_Posting::content_types() as $value => $label ) : ?>
@@ -509,6 +652,19 @@ function fediverse_render_composer( Fediverse_Queue $queue, $context, $post ) {
                     <div class="fedi-only-standalone"><?php fediverse_render_placeholder_chips( $plugin, $uid . '-text', null, true ); ?></div>
                 </div>
 
+                <?php if ( $bluesky && $bluesky->is_connected() ) : ?>
+                    <details class="fedi-field fedi-network-text" data-network="bluesky">
+                        <summary><span class="fedi-label"><?php esc_html_e( 'Bluesky text', 'wp-fediverse-posting' ); ?></span> <span class="fedi-network-text__state fedi-muted" data-own-label="<?php esc_attr_e( 'own text', 'wp-fediverse-posting' ); ?>" data-default-label="<?php esc_attr_e( 'optional: same as above', 'wp-fediverse-posting' ); ?>"></span></summary>
+                        <textarea id="<?php echo esc_attr( $uid ); ?>-text-bluesky" rows="3" class="large-text fedi-template-input" data-field="network_templates[bluesky]" placeholder="<?php esc_attr_e( 'Leave empty to send the text above (shortened to 300 characters when needed).', 'wp-fediverse-posting' ); ?>"></textarea>
+                        <div class="fedi-only-post"><?php fediverse_render_placeholder_chips( $plugin, $uid . '-text-bluesky', $post ? array( $post->post_type ) : null ); ?></div>
+                        <div class="fedi-only-standalone"><?php fediverse_render_placeholder_chips( $plugin, $uid . '-text-bluesky', null, true ); ?></div>
+                        <p class="fedi-type-template__actions">
+                            <button type="button" class="button button-small" data-fedi-copy-common="<?php echo esc_attr( $uid ); ?>-text-bluesky"><?php esc_html_e( 'Copy the text above', 'wp-fediverse-posting' ); ?></button>
+                            <button type="button" class="button-link" data-fedi-clear-template="<?php echo esc_attr( $uid ); ?>-text-bluesky"><?php esc_html_e( 'Clear', 'wp-fediverse-posting' ); ?></button>
+                        </p>
+                    </details>
+                <?php endif; ?>
+
                 <div class="fedi-field fedi-images-field">
                     <span class="fedi-label"><?php esc_html_e( 'Images', 'wp-fediverse-posting' ); ?></span>
                     <div class="fedi-images"></div>
@@ -518,19 +674,32 @@ function fediverse_render_composer( Fediverse_Queue $queue, $context, $post ) {
 
                 <details class="fedi-field fedi-extras">
                     <summary class="fedi-extras__summary"></summary>
-                    <p>
+                    <p class="fedi-only-mastodon">
                         <label class="fedi-label" for="<?php echo esc_attr( $uid ); ?>-cw"><?php esc_html_e( 'Content warning', 'wp-fediverse-posting' ); ?></label>
                         <input type="text" id="<?php echo esc_attr( $uid ); ?>-cw" class="regular-text" maxlength="500" data-field="spoiler_text" placeholder="<?php esc_attr_e( 'Optional, e.g. flashing lights', 'wp-fediverse-posting' ); ?>">
-                        <span class="description"><?php esc_html_e( 'Shown instead of the text until people choose to open it. Also blurs the images.', 'wp-fediverse-posting' ); ?></span>
+                        <span class="description"><?php esc_html_e( 'Mastodon only: shown instead of the text until people choose to open it. Also blurs the images.', 'wp-fediverse-posting' ); ?></span>
                     </p>
-                    <p><label><input type="checkbox" data-field="sensitive"> <?php esc_html_e( 'Mark images as sensitive', 'wp-fediverse-posting' ); ?></label></p>
                     <p>
+                        <label><input type="checkbox" data-field="sensitive"> <?php esc_html_e( 'Mark images as sensitive', 'wp-fediverse-posting' ); ?></label>
+                        <?php if ( $bluesky && $bluesky->is_connected() ) : ?>
+                            <label class="fedi-only-bluesky fedi-sensitive-label" hidden>
+                                <span class="fedi-muted"><?php esc_html_e( 'Bluesky label:', 'wp-fediverse-posting' ); ?></span>
+                                <select data-field="sensitive_label">
+                                    <?php foreach ( Fediverse_Network_Bluesky::labels() as $value => $label ) : ?>
+                                        <option value="<?php echo esc_attr( $value ); ?>"><?php echo esc_html( $label ); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </label>
+                        <?php endif; ?>
+                    </p>
+                    <p class="fedi-only-mastodon">
                         <label class="fedi-label" for="<?php echo esc_attr( $uid ); ?>-vis"><?php esc_html_e( 'Visibility', 'wp-fediverse-posting' ); ?></label>
                         <select id="<?php echo esc_attr( $uid ); ?>-vis" data-field="visibility">
                             <?php foreach ( Fediverse_Posting::visibilities() as $value => $label ) : ?>
                                 <option value="<?php echo esc_attr( $value ); ?>"><?php echo esc_html( $label ); ?></option>
                             <?php endforeach; ?>
                         </select>
+                        <span class="description"><?php esc_html_e( 'Mastodon only.', 'wp-fediverse-posting' ); ?></span>
                     </p>
                     <p>
                         <label class="fedi-label" for="<?php echo esc_attr( $uid ); ?>-lang"><?php esc_html_e( 'Language', 'wp-fediverse-posting' ); ?></label>
@@ -558,14 +727,24 @@ function fediverse_render_composer( Fediverse_Queue $queue, $context, $post ) {
 
             <div class="fedi-composer__preview">
                 <span class="fedi-label"><?php esc_html_e( 'Preview', 'wp-fediverse-posting' ); ?></span>
-                <div class="fedi-preview">
-                    <div class="fedi-preview__head">
-                        <span class="fedi-preview__avatar"></span>
-                        <span class="fedi-preview__who"><strong class="fedi-preview__name"></strong><span class="fedi-preview__acct"></span></span>
-                    </div>
-                    <div class="fedi-preview__cw" hidden><span class="fedi-preview__cw-text"></span> <span class="fedi-preview__cw-btn"></span></div>
-                    <div class="fedi-preview__text"></div>
-                    <div class="fedi-preview__media"></div>
+                <div class="fedi-previews">
+                    <?php foreach ( $connected as $network ) : ?>
+                        <div class="fedi-preview fedi-preview--<?php echo esc_attr( $network->id() ); ?>" data-network="<?php echo esc_attr( $network->id() ); ?>" hidden>
+                            <div class="fedi-preview__net"><span><?php echo esc_html( $network->label() ); ?></span> <span class="fedi-counter fedi-preview__counter" aria-live="polite"></span></div>
+                            <div class="fedi-preview__head">
+                                <span class="fedi-preview__avatar"></span>
+                                <span class="fedi-preview__who"><strong class="fedi-preview__name"></strong><span class="fedi-preview__acct"></span></span>
+                            </div>
+                            <div class="fedi-preview__cw" hidden><span class="fedi-preview__cw-text"></span> <span class="fedi-preview__cw-btn"></span></div>
+                            <div class="fedi-preview__text"></div>
+                            <div class="fedi-preview__media"></div>
+                            <a class="fedi-preview__card" hidden target="_blank" rel="noopener">
+                                <span class="fedi-preview__card-thumb"></span>
+                                <span class="fedi-preview__card-body"><strong class="fedi-preview__card-title"></strong><span class="fedi-preview__card-desc"></span><span class="fedi-preview__card-host fedi-muted"></span></span>
+                            </a>
+                            <ul class="fedi-warnings fedi-preview__warnings"></ul>
+                        </div>
+                    <?php endforeach; ?>
                 </div>
                 <ul class="fedi-warnings"></ul>
             </div>
