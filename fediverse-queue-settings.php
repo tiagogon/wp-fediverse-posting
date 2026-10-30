@@ -463,7 +463,7 @@ function fediverse_render_row( Fediverse_Queue $queue, $row, $context ) {
                 $name    = $network ? $network->label() : $network_id;
                 if ( 'published' === $target['status'] && $target['remote_url'] && in_array( $row['status'], array( 'published', 'failed' ), true ) ) : ?>
                     <a href="<?php echo esc_url( $target['remote_url'] ); ?>" target="_blank" rel="noopener"><?php echo $several ? esc_html( sprintf( /* translators: %s: network */ __( 'View on %s ↗', 'wp-fediverse-posting' ), $name ) ) : esc_html__( 'View ↗', 'wp-fediverse-posting' ); ?></a>
-                    <button type="button" class="button-link fedi-danger-link" data-fedi-action="delete_remote" data-target="<?php echo esc_attr( $target['id'] ); ?>"><?php echo $several ? esc_html( sprintf( /* translators: %s: network */ __( 'Delete on %s', 'wp-fediverse-posting' ), $name ) ) : esc_html__( 'Delete on fediverse', 'wp-fediverse-posting' ); ?></button>
+                    <button type="button" class="button-link fedi-danger-link" data-fedi-action="delete_remote" data-target="<?php echo esc_attr( $target['id'] ); ?>"><?php echo esc_html( sprintf( /* translators: %s: network */ __( 'Delete on %s', 'wp-fediverse-posting' ), $name ) ); ?></button>
                 <?php elseif ( 'failed' === $target['status'] && 'failed' === $row['status'] && $several && ( ! $post || 'publish' === $post->post_status ) ) : ?>
                     <button type="button" class="button button-small" data-fedi-action="retry" data-target="<?php echo esc_attr( $target['id'] ); ?>"><?php echo esc_html( sprintf( /* translators: %s: network */ __( 'Retry %s', 'wp-fediverse-posting' ), $name ) ); ?></button>
                 <?php endif;

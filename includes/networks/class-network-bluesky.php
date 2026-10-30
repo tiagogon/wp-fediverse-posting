@@ -193,7 +193,7 @@ class Fediverse_Network_Bluesky extends Fediverse_Network {
             'acct'         => $handle,
             'display_name' => isset( $p['displayName'] ) && '' !== $p['displayName'] ? (string) $p['displayName'] : $handle,
             'avatar'       => isset( $p['avatar'] ) ? esc_url_raw( $p['avatar'] ) : '',
-            'url'          => 'https://bsky.app/profile/' . rawurlencode( $did ),
+            'url'          => 'https://bsky.app/profile/' . $did,
         );
     }
 
@@ -346,7 +346,7 @@ class Fediverse_Network_Bluesky extends Fediverse_Network {
     /** https://bsky.app/profile/<did>/post/<rkey> — the DID, so a handle change never breaks the link. */
     public static function post_url( $did, $uri ) {
         $rkey = substr( (string) $uri, strrpos( (string) $uri, '/' ) + 1 );
-        return 'https://bsky.app/profile/' . rawurlencode( $did ) . '/post/' . rawurlencode( $rkey );
+        return 'https://bsky.app/profile/' . $did . '/post/' . rawurlencode( $rkey );
     }
 
     /** The account's last posts: one with the same text created within an hour, or null. */
