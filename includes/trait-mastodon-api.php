@@ -11,7 +11,7 @@
  *   retryable   true for 0, 429 and 5xx: the queue retries those
  *   retry_at    unix time the server asks us to wait until (429), if given
  *
- * Used by Fediverse_Posting. Uses: get_instance(), get_token(), log().
+ * Used by Fediverse_Network_Mastodon. Uses: get_instance(), get_token(), is_connected(), log().
  */
 
 if ( ! defined( 'ABSPATH' ) ) {

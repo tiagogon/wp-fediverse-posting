@@ -20,6 +20,10 @@
  * - Standalone rows (post_id 0) only get [site-name]; post placeholders go blank.
  *
  * Content types: text | link | link_image (default) | gallery.
+ *
+ * Everything here is network-neutral. Each network counts characters its own
+ * way (Fediverse_Network::count_characters) and hands its limits to
+ * resolve_media_ids() / prepare_media_file() / alt_text_for().
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -316,11 +320,7 @@ trait Fediverse_Content_Trait {
                 case 'post-url':
                     return $post ? (string) get_permalink( $post ) : '';
                 case 'post-excerpt':
-                    if ( ! $post ) {
-                        return '';
-                    }
-                    $excerpt = has_excerpt( $post ) ? $post->post_excerpt : wp_trim_words( strip_shortcodes( $post->post_content ), 40, '…' );
-                    return trim( wp_specialchars_decode( wp_strip_all_tags( $excerpt ), ENT_QUOTES ) );
+                    return $post ? Fediverse_Posting::excerpt_for( $post ) : '';
             }
             $taxonomy = Fediverse_Posting::taxonomy_from_placeholder( $token );
             if ( '' !== $taxonomy && taxonomy_exists( $taxonomy ) ) {
@@ -343,11 +343,10 @@ trait Fediverse_Content_Trait {
         return preg_replace( "/\n{3,}/", "\n\n", $text );
     }
 
-    /** Mastodon's counting: every URL is worth url_length characters. */
-    public function count_characters( $text ) {
-        $limits = $this->instance_limits();
-        $text   = preg_replace( '#https?://\S+#u', str_repeat( 'x', $limits['url_length'] ), (string) $text );
-        return mb_strlen( $text );
+    /** The post's excerpt as plain text: its own, else the first 40 words. */
+    public static function excerpt_for( $post ) {
+        $excerpt = has_excerpt( $post ) ? $post->post_excerpt : wp_trim_words( strip_shortcodes( $post->post_content ), 40, '…' );
+        return trim( wp_specialchars_decode( wp_strip_all_tags( $excerpt ), ENT_QUOTES ) );
     }
 
 
@@ -374,14 +373,16 @@ trait Fediverse_Content_Trait {
     }
 
     /**
-     * Attachment ids a row will send, in order, capped at the server limit.
+     * Attachment ids a row will send, in order, capped at the network's limit.
      *
      * - link_image: the row's chosen image, else the featured image, else the
      *   first attached image, else none (sends as text + link).
      * - gallery / standalone: the row's picked images.
+     *
+     * @param array|null $limits A network's limits(); null = default_limits().
      */
-    public function resolve_media_ids( $row, $post ) {
-        $limits = $this->instance_limits();
+    public function resolve_media_ids( $row, $post, $limits = null ) {
+        $limits = $limits ? $limits : $this->default_limits();
         $picked = array_values( array_filter( array_map( 'intval', (array) $row['gallery_ids'] ) ) );
 
         switch ( $row['content_type'] ) {
@@ -404,27 +405,31 @@ trait Fediverse_Content_Trait {
         }
     }
 
-    /** Alt text: the row's override, else the attachment's alt, max 1500 chars. */
-    public function alt_text_for( $attachment_id, $row ) {
+    /** Alt text: the row's override, else the attachment's alt, cut to the network's max. */
+    public function alt_text_for( $attachment_id, $row, $max = 1500 ) {
         $overrides = (array) $row['alt_overrides'];
         $alt       = isset( $overrides[ $attachment_id ] ) ? (string) $overrides[ $attachment_id ] : '';
         if ( '' === trim( $alt ) ) {
             $alt = (string) get_post_meta( $attachment_id, '_wp_attachment_image_alt', true );
         }
-        return mb_substr( trim( $alt ), 0, 1500 );
+        return mb_substr( trim( $alt ), 0, (int) $max );
     }
 
     /**
-     * Pick the file to upload: the original when the server accepts its size
+     * Pick the file to upload: the original when the network accepts its size
      * and type, else the largest generated size that fits (JPEG copies of
-     * HEIC/TIFF originals included). Offloaded media is downloaded to a temp file.
+     * HEIC/TIFF originals included). Offloaded media is downloaded to a temp
+     * file. When nothing fits (Bluesky's 1 MB with a huge PNG, say) the
+     * largest readable copy is re-encoded as a smaller JPEG.
      *
+     * @param array|null $limits A network's limits(); null = default_limits().
      * @return array|WP_Error { path, mime, temp (bool) }
      */
-    public function prepare_media_file( $attachment_id ) {
-        $limits = $this->instance_limits();
+    public function prepare_media_file( $attachment_id, $limits = null ) {
+        $limits = $limits ? $limits : $this->default_limits();
         $types  = $limits['image_types'];
         $max    = $limits['image_size_limit'];
+        $best   = '';
 
         $candidates = array();
         $original   = function_exists( 'wp_get_original_image_path' ) ? wp_get_original_image_path( $attachment_id ) : '';
@@ -448,8 +453,14 @@ trait Fediverse_Content_Trait {
         }
 
         foreach ( $candidates as $c ) {
-            if ( is_readable( $c['path'] ) && in_array( $c['mime'], $types, true ) && filesize( $c['path'] ) <= $max ) {
+            if ( ! is_readable( $c['path'] ) ) {
+                continue;
+            }
+            if ( in_array( $c['mime'], $types, true ) && filesize( $c['path'] ) <= $max ) {
                 return array( 'path' => $c['path'], 'mime' => $c['mime'], 'temp' => false );
+            }
+            if ( '' === $best && 0 === strpos( $c['mime'], 'image/' ) ) {
+                $best = $c['path'];
             }
         }
 
@@ -470,11 +481,53 @@ trait Fediverse_Content_Trait {
             }
         }
 
+        // Last resort: re-encode the largest local copy as a smaller JPEG.
+        if ( '' !== $best && in_array( 'image/jpeg', $types, true ) ) {
+            $shrunk = $this->shrink_image_file( $best, $max );
+            if ( $shrunk ) {
+                return array( 'path' => $shrunk, 'mime' => 'image/jpeg', 'temp' => true );
+            }
+        }
+
         return new WP_Error(
             'fediverse_media',
             /* translators: %d: attachment ID */
             sprintf( __( 'Image #%d has no copy the server accepts (type or size).', 'wp-fediverse-posting' ), $attachment_id ),
             array( 'status' => 0, 'retryable' => false )
         );
+    }
+
+    /**
+     * Resize to at most 2000 px and save as JPEG at falling quality until the
+     * file is under $max_bytes. Returns the temp file path, or '' when even the
+     * smallest attempt is too big (or no image editor is available).
+     */
+    public function shrink_image_file( $path, $max_bytes ) {
+        $editor = wp_get_image_editor( $path );
+        if ( is_wp_error( $editor ) ) {
+            return '';
+        }
+        $editor->resize( 2000, 2000 );
+        foreach ( array( 85, 75, 65, 50 ) as $quality ) {
+            $editor->set_quality( $quality );
+            $tmp   = wp_tempnam( 'fediverse-image.jpg' );
+            $saved = $editor->save( $tmp, 'image/jpeg' );
+            if ( is_wp_error( $saved ) ) {
+                wp_delete_file( $tmp );
+                return '';
+            }
+            $saved_path = isset( $saved['path'] ) ? $saved['path'] : $tmp;
+            if ( filesize( $saved_path ) <= $max_bytes ) {
+                if ( $saved_path !== $tmp ) {
+                    wp_delete_file( $tmp );
+                }
+                return $saved_path;
+            }
+            wp_delete_file( $saved_path );
+            if ( $saved_path !== $tmp ) {
+                wp_delete_file( $tmp );
+            }
+        }
+        return '';
     }
 }

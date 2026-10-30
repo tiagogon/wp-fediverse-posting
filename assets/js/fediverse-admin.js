@@ -4,7 +4,8 @@
  *
  * Everything that knows about content (placeholders, hashtags, the image a
  * post will send, character counting) runs on the server: the composer asks
- * `fediverse_preview` for the exact text and images and only draws them.
+ * `fediverse_preview` for the exact text and images per network and only
+ * draws them, one preview card per ticked network (C.networks).
  * Rows are always server-rendered HTML (`html` in every list response).
  *
  * Config: window.fediverseConfig (wp_localize_script in trait-settings-page.php).
@@ -90,6 +91,13 @@
         $( target ).trigger( 'input' ).trigger( 'focus' );
     } );
 
+    $( document ).on( 'click', '[data-fedi-copy-common]', function () {
+        var target = document.getElementById( $( this ).data( 'fedi-copy-common' ) );
+        var $common = $( this ).closest( '.fedi-composer' ).find( '[data-field="template"]' );
+        target.value = $common.val();
+        $( target ).trigger( 'input' ).trigger( 'focus' );
+    } );
+
     $( document ).on( 'click', '[data-fedi-clear-template]', function () {
         var target = document.getElementById( $( this ).data( 'fedi-clear-template' ) );
         target.value = '';
@@ -123,7 +131,22 @@
     }
 
     Box.prototype.field = function ( name ) {
-        return this.$composer.find( '[data-field="' + name + '"]' );
+        return this.$composer.find( '[data-field="' + name.replace( /"/g, '\\"' ) + '"]' );
+    };
+
+    /** Ticked network ids; every connected one when the chooser is hidden (a single network). */
+    Box.prototype.destinations = function () {
+        var $boxes = this.field( 'destinations' );
+        if ( ! $boxes.length || $boxes.closest( '.fedi-destinations' ).prop( 'hidden' ) ) {
+            return Object.keys( C.networks );
+        }
+        return $boxes.filter( ':checked' ).map( function () {
+            return $( this ).val();
+        } ).get();
+    };
+
+    Box.prototype.has = function ( network ) {
+        return this.destinations().indexOf( network ) !== -1;
     };
 
     Box.prototype.radio = function ( name, value ) {
@@ -246,10 +269,27 @@
             this.radio( 'content_type', row ? row.content_type : d.content_type );
         }
         this.field( 'template' ).val( row ? row.template : ( this.standalone ? '' : d.template ) );
+
+        // Destinations: the row's targets, else the Settings default. A target
+        // that already went out stays ticked and locked.
+        var picked = row ? Object.keys( row.targets || {} ) : C.defaultDestinations;
+        this.field( 'destinations' ).each( function () {
+            var id = $( this ).val();
+            var target = row && row.targets ? row.targets[ id ] : null;
+            var locked = !! target && target.status !== 'pending' && target.status !== 'failed';
+            $( this ).prop( 'checked', picked.indexOf( id ) !== -1 ).prop( 'disabled', locked )
+                .closest( 'label' ).attr( 'title', locked ? T.lockedTarget : null ).toggleClass( 'is-locked', locked );
+        } );
+
+        var ownBluesky = row ? ( row.network_templates && row.network_templates.bluesky ) || '' : ( this.standalone ? '' : ( d.network_templates.bluesky || '' ) );
+        this.field( 'network_templates[bluesky]' ).val( ownBluesky );
+        this.$composer.find( '.fedi-network-text' ).prop( 'open', !! ownBluesky );
+
         this.field( 'visibility' ).val( row ? row.visibility : d.visibility );
         this.field( 'language' ).val( row ? row.language : d.language );
         this.field( 'spoiler_text' ).val( row ? row.spoiler_text : '' );
         this.field( 'sensitive' ).prop( 'checked', row ? !! parseInt( row.is_sensitive, 10 ) : false );
+        this.field( 'sensitive_label' ).val( row && row.sensitive_label ? row.sensitive_label : d.sensitive_label );
         this.radio( 'when', when );
         this.field( 'at' ).val( row && row.at_local ? row.at_local : '' );
 
@@ -286,6 +326,22 @@
         var when = this.radio( 'when' );
         var hasImages = this.standalone || type === 'link_image' || type === 'gallery';
         var multi = this.standalone || type === 'gallery';
+        var dests = this.destinations();
+        var self = this;
+
+        // Parts that only one network understands.
+        this.$composer.find( '.fedi-only-mastodon' ).prop( 'hidden', ! this.has( 'mastodon' ) );
+        this.$composer.find( '.fedi-only-bluesky' ).prop( 'hidden', ! this.has( 'bluesky' ) );
+        this.$composer.find( '.fedi-network-text' ).each( function () {
+            $( this ).prop( 'hidden', ! self.has( $( this ).data( 'network' ) ) );
+            var own = $.trim( $( this ).find( 'textarea' ).val() ) !== '';
+            var $state = $( this ).find( '.fedi-network-text__state' );
+            $state.text( $state.data( own ? 'own-label' : 'default-label' ) );
+        } );
+        this.$composer.find( '.fedi-sensitive-label' ).prop( 'hidden', ! ( this.has( 'bluesky' ) && this.field( 'sensitive' ).is( ':checked' ) ) );
+        this.$composer.find( '.fedi-preview' ).each( function () {
+            $( this ).prop( 'hidden', dests.indexOf( $( this ).data( 'network' ) ) === -1 );
+        } );
 
         this.$composer.find( '.fedi-images-field' ).prop( 'hidden', ! hasImages );
         this.$composer.find( '[data-fedi-pick]' ).text( multi ? T.pickImages : T.pickImage );
@@ -313,15 +369,24 @@
         }
         this.$composer.find( '.fedi-when__hint' ).text( hint ).toggleClass( 'fedi-note--warning', blocked );
 
+        if ( ! dests.length ) {
+            hint = T.pickNetwork;
+            blocked = true;
+        }
+
         var labels = { now: T.postNow, on_publish: T.postOnPublish, queue: T.addToQueue, at: T.schedule };
         this.$composer.find( '[data-fedi-submit]' ).text( labels[ when ] || T.save ).prop( 'disabled', blocked || this.overLimit );
         this.blocked = blocked;
 
         // Folded extras summary.
+        var parts = [];
         var cw = $.trim( this.field( 'spoiler_text' ).val() );
-        var vis = this.field( 'visibility' ).find( 'option:selected' ).text();
-        var lang = this.field( 'language' ).val() || this.field( 'language' ).find( 'option:first' ).text();
-        this.$composer.find( '.fedi-extras__summary' ).text( ( cw ? 'CW: ' + cw : T.noCw ) + ' · ' + vis.replace( / \(.*\)$/, '' ) + ' · ' + lang );
+        if ( this.has( 'mastodon' ) ) {
+            parts.push( cw ? 'CW: ' + cw : T.noCw );
+            parts.push( this.field( 'visibility' ).find( 'option:selected' ).text().replace( / \(.*\)$/, '' ) );
+        }
+        parts.push( this.field( 'language' ).val() || this.field( 'language' ).find( 'option:first' ).text() );
+        this.$composer.find( '.fedi-extras__summary' ).text( parts.join( ' · ' ) );
     };
 
     Box.prototype.collect = function () {
@@ -336,6 +401,9 @@
             language: this.field( 'language' ).val(),
             spoiler_text: this.field( 'spoiler_text' ).val(),
             sensitive: this.field( 'sensitive' ).is( ':checked' ) ? 1 : 0,
+            sensitive_label: this.field( 'sensitive_label' ).val() || '',
+            destinations: this.destinations(),
+            network_templates: { bluesky: this.field( 'network_templates[bluesky]' ).val() || '' },
             when: this.radio( 'when' ),
             at: this.field( 'at' ).val()
         };
@@ -378,31 +446,58 @@
     }
 
     Box.prototype.drawPreview = function ( p ) {
+        var self = this;
         var $c = this.$composer;
-        var a = C.account;
-
-        // Counter.
-        var left = p.max - p.chars;
-        this.overLimit = left < 0;
-        $c.find( '.fedi-counter' )
-            .text( left >= 0 ? left + ' ' + T.left : ( -left ) + ' ' + T.over )
-            .toggleClass( 'is-over', left < 0 );
-
-        // Card.
-        $c.find( '.fedi-preview__avatar' ).html( a.avatar ? '<img src="' + esc( a.avatar ) + '" alt="">' : '' );
-        $c.find( '.fedi-preview__name' ).text( a.name );
-        $c.find( '.fedi-preview__acct' ).text( a.acct ? '@' + a.acct : '' );
         var cw = $.trim( this.field( 'spoiler_text' ).val() );
-        $c.find( '.fedi-preview__cw' ).prop( 'hidden', ! cw );
-        $c.find( '.fedi-preview__cw-text' ).text( cw );
-        $c.find( '.fedi-preview__cw-btn' ).text( T.showMore );
-        $c.find( '.fedi-preview__text' ).html( linkify( p.text ) ).toggleClass( 'is-behind-cw', !! cw );
+        var sensitive = this.field( 'sensitive' ).is( ':checked' );
+        this.overLimit = false;
 
-        var blur = !! cw || this.field( 'sensitive' ).is( ':checked' );
-        var media = p.images.map( function ( img ) {
-            return '<img src="' + esc( img.url ) + '" alt="' + esc( img.alt ) + '"' + ( blur ? ' class="is-blurred"' : '' ) + '>';
-        } ).join( '' );
-        $c.find( '.fedi-preview__media' ).attr( 'data-count', p.images.length ).html( media );
+        $c.find( '.fedi-preview' ).each( function () {
+            var id = $( this ).data( 'network' );
+            var n = p.networks[ id ];
+            var $p = $( this );
+            if ( ! n ) {
+                $p.prop( 'hidden', true );
+                return;
+            }
+            var a = C.networks[ id ] ? C.networks[ id ].account : {};
+            var left = n.max - n.chars;
+            var hard = n.hard;
+            if ( hard && n.over ) {
+                self.overLimit = true;
+            }
+            $p.prop( 'hidden', false );
+            $p.find( '.fedi-preview__counter' )
+                .text( n.over && ! hard ? T.shortened : ( left >= 0 ? left + ' ' + T.left : ( -left ) + ' ' + T.over ) )
+                .toggleClass( 'is-over', hard && n.over ).toggleClass( 'is-soft', ! hard && n.over );
+
+            $p.find( '.fedi-preview__avatar' ).html( a.avatar ? '<img src="' + esc( a.avatar ) + '" alt="">' : '' );
+            $p.find( '.fedi-preview__name' ).text( a.name || '' );
+            $p.find( '.fedi-preview__acct' ).text( a.acct ? '@' + a.acct : '' );
+
+            var showCw = id === 'mastodon' && !! cw;
+            $p.find( '.fedi-preview__cw' ).prop( 'hidden', ! showCw );
+            $p.find( '.fedi-preview__cw-text' ).text( cw );
+            $p.find( '.fedi-preview__cw-btn' ).text( T.showMore );
+            $p.find( '.fedi-preview__text' ).html( linkify( n.text ) ).toggleClass( 'is-behind-cw', showCw );
+
+            var blur = showCw || sensitive;
+            var media = n.images.map( function ( img ) {
+                return '<img src="' + esc( img.url ) + '" alt="' + esc( img.alt ) + '"' + ( blur ? ' class="is-blurred"' : '' ) + '>';
+            } ).join( '' );
+            $p.find( '.fedi-preview__media' ).attr( 'data-count', n.images.length ).html( media );
+
+            var $card = $p.find( '.fedi-preview__card' ).prop( 'hidden', ! n.card );
+            if ( n.card ) {
+                $card.find( '.fedi-preview__card-thumb' ).html( n.card.thumb ? '<img src="' + esc( n.card.thumb ) + '" alt=""' + ( blur ? ' class="is-blurred"' : '' ) + '>' : '' ).prop( 'hidden', ! n.card.thumb );
+                $card.find( '.fedi-preview__card-title' ).text( n.card.title );
+                $card.find( '.fedi-preview__card-desc' ).text( n.card.description );
+                $card.find( '.fedi-preview__card-host' ).text( n.card.host );
+            }
+            $p.find( '.fedi-preview__warnings' ).html( n.warnings.map( function ( w ) {
+                return '<li>' + esc( w ) + '</li>';
+            } ).join( '' ) );
+        } );
 
         // Image list with alt text: rebuilt only when the set changes, so typing keeps focus.
         var key = p.images.map( function ( i ) {
@@ -413,8 +508,8 @@
             this.drawImages( p.images );
         }
 
-        // Warnings.
-        $c.find( '.fedi-warnings' ).html( p.warnings.map( function ( w ) {
+        // Common warnings.
+        $c.find( '.fedi-composer__preview > .fedi-warnings' ).html( p.warnings.map( function ( w ) {
             return '<li>' + esc( w ) + '</li>';
         } ).join( '' ) );
 
@@ -439,6 +534,18 @@
         this.$composer.find( '.fedi-images' ).html( html );
     };
 
+    /** Images the strictest ticked network takes. */
+    Box.prototype.maxMedia = function () {
+        var max = 0;
+        this.destinations().forEach( function ( id ) {
+            var n = C.networks[ id ];
+            if ( n && ( ! max || n.maxMedia < max ) ) {
+                max = n.maxMedia;
+            }
+        } );
+        return max || 4;
+    };
+
     Box.prototype.pickImages = function () {
         var self = this;
         var multi = this.standalone || this.contentType() === 'gallery';
@@ -460,7 +567,7 @@
             var ids = frame.state().get( 'selection' ).map( function ( a ) {
                 return a.id;
             } );
-            self.state.images = ids.slice( 0, multi ? C.maxMedia : 1 );
+            self.state.images = ids.slice( 0, multi ? self.maxMedia() : 1 );
             self.syncUi();
             self.preview();
         } );
@@ -521,6 +628,9 @@
             return;
         }
         var data = { id: id };
+        if ( $btn.data( 'target' ) ) {
+            data.target = $btn.data( 'target' );
+        }
         if ( action === 'skip_auto' ) {
             data = { post_id: this.postId, skip: $btn.data( 'skip' ) };
         }
