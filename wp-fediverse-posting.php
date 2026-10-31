@@ -3,7 +3,7 @@
  * Plugin Name:       Fediverse Posting for WordPress
  * Plugin URI:        https://github.com/tiagogon/wp-fediverse-posting
  * Description:       Share posts on Mastodon (or any Mastodon-compatible server) and Bluesky: post now, when a post is published, or from a queue with weekly time slots.
- * Version:           1.1.0
+ * Version:           1.2.0
  * Requires at least: 6.4
  * Requires PHP:      7.4
  * Author:            Tiago Gonçalves
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'FEDIVERSE_POSTING_VERSION', '1.1.0' );
+define( 'FEDIVERSE_POSTING_VERSION', '1.2.0' );
 define( 'FEDIVERSE_POSTING_FILE', __FILE__ );
 define( 'FEDIVERSE_POSTING_DIR', plugin_dir_path( __FILE__ ) );
 define( 'FEDIVERSE_POSTING_URL', plugin_dir_url( __FILE__ ) );

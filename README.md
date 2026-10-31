@@ -13,7 +13,7 @@ Share your WordPress posts on **Mastodon** (or any server that speaks the Mastod
 - **Alt text** from the Media Library, editable per post, with a warning when an image has none.
 - **Content warnings** and visibility (Mastodon), a content label for sensitive images (Bluesky), and language per post.
 - **Bluesky's 300 characters**: Bluesky gets the same text, shortened at a word boundary (the link is kept) when it is longer; the preview shows exactly what goes out. Each post type can have its own, shorter Bluesky text, and each post can override it.
-- **Link cards on Bluesky** are built by the plugin (title, excerpt, image), so they need no public fetch. URLs and `#Hashtags` are sent as rich-text facets.
+- **Photos and link cards on Bluesky**: posts with images go out as real images, with the link clickable in the text. Posts without images get a link card built by the plugin (title, excerpt), so it needs no public fetch. URLs and `#Hashtags` are sent as rich-text facets.
 - **A live preview** per network, with each one's own counter and limits.
 - **No double posts**: each row is claimed atomically; Mastodon sends carry an `Idempotency-Key`, Bluesky re-sends check the account for an identical recent post.
 

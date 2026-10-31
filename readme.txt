@@ -4,7 +4,7 @@ Tags: mastodon, bluesky, fediverse, atproto, social, autopost, schedule
 Requires at least: 6.4
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.1.0
+Stable tag: 1.2.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -20,7 +20,7 @@ Connect your existing Mastodon and Bluesky accounts and share posts from the edi
 * Text + link + featured image (default), text + link, a gallery of images, or text only.
 * Placeholders filled in at send time: [post-title] [post-url] [post-excerpt] [site-name], and hashtags from any taxonomy: [tags], [categories], [tax-slug].
 * Alt text, content warnings and visibility (Mastodon), content labels (Bluesky) and language per post, with a live preview per network.
-* Bluesky's 300 characters: the text is shortened at a word boundary when needed (the link is kept), or each post type gets its own shorter Bluesky text. Link cards are built by the plugin.
+* Bluesky's 300 characters: the text is shortened at a word boundary when needed (the link is kept), or each post type gets its own shorter Bluesky text. Posts with images go out as real images; link cards for the others are built by the plugin.
 * Retries for network errors, and no double posts: an Idempotency-Key on Mastodon sends, a duplicate check on Bluesky re-sends.
 
 Works with Mastodon, GoToSocial, Akkoma and other servers implementing the Mastodon client API, and with Bluesky (app password). No ActivityPub server inside WordPress, no ACF.
@@ -42,11 +42,15 @@ No. It posts to the account you already have. For that, look at the ActivityPub 
 
 Mastodon does not show a card when images are attached. Without images, every server that shows the post fetches your page to build the card, so the site must be public and must not block user agents containing "Mastodon".
 
-= Why does the Bluesky post have a card when the Mastodon one does not? =
+= Why does a Bluesky post have a card when the Mastodon one does not? =
 
-Bluesky fetches nothing: the plugin builds the card itself from the title, excerpt and image, so it is always there. Galleries show as an image grid instead.
+Bluesky fetches nothing: for posts without images the plugin builds the card itself from the title and excerpt, so it is always there. A Bluesky post carries either images or a card, so posts with images show the images, and the link stays clickable in the text.
 
 == Changelog ==
+
+= 1.2.0 =
+* Bluesky: "Link + image" posts now go out as a real image instead of a link card with a thumbnail, like on Mastodon. The link stays clickable in the text, and the image carries its alt text.
+* Bluesky: images are sent with their aspect ratio.
 
 = 1.1.0 =
 * Bluesky as a second destination (app password). Each post picks its networks; every network keeps its own status, retry and delete.

@@ -303,14 +303,13 @@ trait Fediverse_Queue_Ajax_Trait {
             }
 
             $card = null;
-            if ( $post && ! $network->supports( 'server_link_card' ) && in_array( $data['content_type'], array( 'link', 'link_image', 'gallery' ), true ) && ( 'gallery' !== $data['content_type'] || empty( $media ) ) ) {
+            if ( $post && ! $network->supports( 'server_link_card' ) && in_array( $data['content_type'], array( 'link', 'link_image', 'gallery' ), true ) && empty( $media ) ) {
                 $card = array(
                     'title'       => wp_specialchars_decode( wp_strip_all_tags( get_the_title( $post ) ), ENT_QUOTES ),
                     'description' => Fediverse_Posting::excerpt_for( $post ),
                     'host'        => wp_parse_url( home_url(), PHP_URL_HOST ),
-                    'thumb'       => $images ? $images[0]['url'] : '',
+                    'thumb'       => '',
                 );
-                $images = array(); // The image is the card's thumbnail, not an attachment.
             } elseif ( $media && $network->supports( 'server_link_card' ) && preg_match( '#https?://#', $text ) ) {
                 /* translators: %s: network */
                 $warn[] = sprintf( __( 'With images attached, %s shows the images instead of a link preview card.', 'wp-fediverse-posting' ), $network->label() );

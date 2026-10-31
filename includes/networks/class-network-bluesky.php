@@ -7,9 +7,10 @@
  *   3000 bytes); links and #hashtags only become clickable through facets
  *   with UTF-8 byte offsets (Fediverse_Bluesky_Text).
  * - Images go up as blobs (uploadBlob, ≤ 1 MB each, max 4) and are embedded
- *   as app.bsky.embed.images; link posts get an app.bsky.embed.external card
- *   that the plugin builds itself (Bluesky fetches no previews). The two
- *   embeds cannot be combined.
+ *   as app.bsky.embed.images, with the link clickable in the text. Link posts
+ *   without an image get an app.bsky.embed.external card that the plugin
+ *   builds itself (Bluesky fetches no previews). The two embeds cannot be
+ *   combined.
  * - "Mark images as sensitive" becomes a self-label (sexual / nudity / porn /
  *   graphic-media) chosen per row.
  * - No idempotency key exists: the queue's claim plus the target update right
@@ -248,7 +249,7 @@ class Fediverse_Network_Bluesky extends Fediverse_Network {
             if ( is_wp_error( $blob ) ) {
                 return $blob;
             }
-            $blobs[] = array( 'blob' => $blob, 'alt' => (string) $file['alt'] );
+            $blobs[] = array( 'blob' => $blob, 'alt' => (string) $file['alt'], 'ratio' => self::aspect_ratio( $file['path'] ) );
         }
 
         $record = array(
@@ -300,15 +301,20 @@ class Fediverse_Network_Bluesky extends Fediverse_Network {
     }
 
     /**
-     * Images for galleries and standalone posts; a link card for link posts
-     * (with the picked image as thumbnail); nothing for text-only.
+     * Any row with images sends them as images (a post carries one embed, so
+     * no card then); a post's link row without images gets a link card;
+     * nothing for text-only.
      */
     private function embed_for( array $row, $post, array $blobs ) {
         $type = $row['content_type'];
-        if ( $blobs && ( 'gallery' === $type || ! $post ) ) {
+        if ( $blobs && ( 'gallery' === $type || 'link_image' === $type || ! $post ) ) {
             $images = array();
             foreach ( array_slice( $blobs, 0, 4 ) as $b ) {
-                $images[] = array( 'image' => $b['blob'], 'alt' => $b['alt'] );
+                $image = array( 'image' => $b['blob'], 'alt' => $b['alt'] );
+                if ( ! empty( $b['ratio'] ) ) {
+                    $image['aspectRatio'] = $b['ratio'];
+                }
+                $images[] = $image;
             }
             return array( '$type' => 'app.bsky.embed.images', 'images' => $images );
         }
@@ -318,12 +324,30 @@ class Fediverse_Network_Bluesky extends Fediverse_Network {
                 'title'       => wp_specialchars_decode( wp_strip_all_tags( get_the_title( $post ) ), ENT_QUOTES ),
                 'description' => Fediverse_Bluesky_Text::substr( Fediverse_Posting::excerpt_for( $post ), 0, self::MAX_GRAPHEMES ),
             );
-            if ( $blobs ) {
-                $external['thumb'] = $blobs[0]['blob'];
-            }
             return array( '$type' => 'app.bsky.embed.external', 'external' => $external );
         }
         return null;
+    }
+
+    /**
+     * { width, height } as displayed, or null when unknown (the key is optional
+     * on Bluesky, so an unreadable size never blocks a post). Reads headers only.
+     * JPEG dimensions ignore EXIF rotation, so orientations 5 to 8 swap them.
+     */
+    private static function aspect_ratio( $path ) {
+        $size = wp_getimagesize( $path );
+        if ( ! $size || empty( $size[0] ) || empty( $size[1] ) ) {
+            return null;
+        }
+        $width  = (int) $size[0];
+        $height = (int) $size[1];
+        if ( IMAGETYPE_JPEG === $size[2] && function_exists( 'exif_read_data' ) ) {
+            $exif = @exif_read_data( $path ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- corrupt EXIF warns; it only means no rotation is known.
+            if ( ! empty( $exif['Orientation'] ) && (int) $exif['Orientation'] >= 5 && (int) $exif['Orientation'] <= 8 ) {
+                list( $width, $height ) = array( $height, $width );
+            }
+        }
+        return array( 'width' => $width, 'height' => $height );
     }
 
     public function delete( $remote_id ) {
