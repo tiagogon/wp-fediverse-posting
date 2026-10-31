@@ -44,7 +44,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
     <h3><?php esc_html_e( '5. Link previews', 'wp-fediverse-posting' ); ?></h3>
     <p><?php esc_html_e( 'Mastodon: for text + link posts, every server that shows the post fetches your page to build the preview card, from its Open Graph tags (an SEO plugin usually provides them). If a firewall or bot blocker on your site refuses user agents containing "Mastodon", the cards come out blank. Sites on localhost never get cards. With images attached, Mastodon shows the images instead of a card.', 'wp-fediverse-posting' ); ?></p>
-    <p><?php esc_html_e( 'Bluesky: nothing is fetched. The plugin builds the card itself from the post title, excerpt and the chosen image, so it works everywhere. Galleries show as an image grid instead of a card.', 'wp-fediverse-posting' ); ?></p>
+    <p><?php esc_html_e( 'Bluesky: nothing is fetched. For text + link posts the plugin builds the card itself from the post title and excerpt, so it works everywhere. With images attached, Bluesky shows the images instead of a card, and the link stays clickable in the text.', 'wp-fediverse-posting' ); ?></p>
 
     <h3><?php esc_html_e( 'If a post fails', 'wp-fediverse-posting' ); ?></h3>
     <p><?php esc_html_e( 'Network and server errors are retried three times (after 5, 15 and 30 minutes), per network. Anything else marks the post Failed in the Planner, with the reason, and emails the site admin. Mastodon sends carry a key that stops the server from posting the same thing twice; on Bluesky a retried send first checks the account for an identical recent post.', 'wp-fediverse-posting' ); ?></p>
