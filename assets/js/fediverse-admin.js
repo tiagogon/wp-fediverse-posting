@@ -254,15 +254,17 @@
             imageKey: ''
         };
 
+        // New entries default to the queue while it has time slots; without
+        // slots, an unpublished post waits for publication and the rest is "Now".
         var when;
         if ( row ) {
             when = row.trigger_type === 'now' ? 'now' : row.trigger_type;
+        } else if ( nextSlot ) {
+            when = 'queue';
         } else if ( this.context === 'editor' && ! this.postPublic ) {
             when = 'on_publish';
-        } else if ( this.context === 'editor' ) {
-            when = 'now';
         } else {
-            when = nextSlot ? 'queue' : 'now';
+            when = 'now';
         }
 
         if ( ! this.standalone ) {
