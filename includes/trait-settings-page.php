@@ -624,6 +624,8 @@ trait Fediverse_Settings_Page_Trait {
                 'nextSlot'      => __( 'Next slot:', 'wp-fediverse-posting' ),
                 'noSlots'       => __( 'No time slots yet: add them under Fediverse → Planner.', 'wp-fediverse-posting' ),
                 'nowBlocked'    => __( 'Publish the post first: its link does not work yet.', 'wp-fediverse-posting' ),
+                'queuePaused'   => __( 'Paused until the post is published, then it takes the first free slot after the queue.', 'wp-fediverse-posting' ),
+                'notSaved'      => __( 'Not shared yet: press the button below.', 'wp-fediverse-posting' ),
                 'useDefault'    => __( 'Use the default text', 'wp-fediverse-posting' ),
                 'noCw'          => __( 'No content warning', 'wp-fediverse-posting' ),
                 'showMore'      => __( 'Show more', 'wp-fediverse-posting' ),

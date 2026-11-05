@@ -52,6 +52,8 @@ Every planned post is a row in `{prefix}fediverse_queue`, with one **target** pe
 | Next queue slot | `scheduled` (slot) | at its slot; slots follow the Planner order |
 | Date & time | `scheduled` (fixed) | at that moment; queue slots flow around it |
 
+On a post that is not public yet (draft, scheduled), "Next queue slot" and "Date & time" rows start **Paused**: a queue row joins the **end** of the queue when the post is published, a fixed-time row goes at its time (or at once if it has passed). In the block editor, the post's own Save / Update / Schedule button also saves an open Fediverse composer, except with "Now" picked: saving a post never sends anything.
+
 A cron event every 5 minutes sends due rows, one per run, to every ticked network. Network errors, `429` and `5xx` are retried after 5, 15 and 30 minutes, per network. Other errors mark that target failed; the row shows **Failed** (with the networks and reasons) and the site admin gets one email. A network that is not connected does not fail anything: the row waits until it is.
 
 If the WordPress post leaves `publish` (draft, private, trash), its rows are **Paused**. They resume when it is published again. Deleting the post deletes the rows that never went out; history is kept for 30 days.

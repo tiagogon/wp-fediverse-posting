@@ -361,8 +361,15 @@
         var linkInText = /\[post-url\]/.test( this.field( 'template' ).val() );
         if ( when === 'queue' ) {
             var next = this.$el.attr( 'data-next-slot' );
-            hint = next ? T.nextSlot + ' ' + next : T.noSlots;
-            blocked = ! next;
+            if ( ! next ) {
+                hint = T.noSlots;
+                blocked = true;
+            } else if ( ! this.standalone && ! this.postPublic ) {
+                // Not public yet: the row waits, then joins the end of the queue.
+                hint = T.queuePaused;
+            } else {
+                hint = T.nextSlot + ' ' + next;
+            }
         } else if ( when === 'now' && ! this.standalone && ! this.postPublic && linkInText ) {
             hint = T.nowBlocked;
             blocked = true;
@@ -574,11 +581,28 @@
         frame.open();
     };
 
-    Box.prototype.submit = function () {
-        var self = this;
-        if ( this.blocked || this.overLimit ) {
+    /**
+     * The post's own Save / Update / Schedule button: an open composer is saved
+     * too, except "Now" (saving a post must never send) or when blocked; then
+     * the composer stays open and says so.
+     */
+    Box.prototype.saveWithPost = function () {
+        if ( ! this.state || this.standalone ) {
             return;
         }
+        if ( this.radio( 'when' ) === 'now' || this.blocked || this.overLimit ) {
+            this.$composer.find( '.fedi-composer__msg' ).text( T.notSaved );
+            return;
+        }
+        this.submit();
+    };
+
+    Box.prototype.submit = function () {
+        var self = this;
+        if ( this.blocked || this.overLimit || this.saving ) {
+            return;
+        }
+        this.saving = true;
         var when = this.radio( 'when' );
         var $btn = this.$composer.find( '[data-fedi-submit]' ).prop( 'disabled', true );
         var $spin = this.$composer.find( '.spinner' ).addClass( 'is-active' );
@@ -596,6 +620,7 @@
             $msg.text( T.failed );
             self.refresh();
         } ).always( function () {
+            self.saving = false;
             $spin.removeClass( 'is-active' );
             $btn.prop( 'disabled', false );
         } );
@@ -717,7 +742,8 @@
         } );
     };
 
-    // ── Block editor: refresh after each save (publishing releases rows) ───
+    // ── Block editor: save an open composer with the post, refresh after each
+    //    save (publishing releases rows) ─────────────────────────────────────
 
     function watchBlockEditor( box ) {
         if ( ! window.wp || ! wp.data || ! wp.data.select( 'core/editor' ) ) {
@@ -727,6 +753,9 @@
         wp.data.subscribe( function () {
             var ed = wp.data.select( 'core/editor' );
             var saving = ed.isSavingPost() && ! ed.isAutosavingPost();
+            if ( saving && ! wasSaving ) {
+                box.saveWithPost();
+            }
             if ( wasSaving && ! saving ) {
                 setTimeout( function () {
                     box.refresh();

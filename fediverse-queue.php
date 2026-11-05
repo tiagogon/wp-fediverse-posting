@@ -854,8 +854,10 @@ class Fediverse_Queue {
 
     /**
      * Into publish: release waiting rows (or create one from the defaults when
-     * "post when published" is on and the post has none). Out of publish
-     * (draft, private, trash…): pause scheduled rows.
+     * "post when published" is on and the post has none) and resume paused
+     * rows: a queue row joins the end of the queue at that moment, a fixed-time
+     * row keeps its time unless it has passed. Out of publish (draft, private,
+     * trash…): pause scheduled rows.
      */
     public function on_transition_post_status( $new, $old, $post ) {
         if ( $new === $old || ! in_array( $post->post_type, $this->plugin->post_types(), true ) ) {
@@ -886,6 +888,9 @@ class Fediverse_Queue {
                 $data = array( 'status' => 'scheduled' );
                 if ( 'at' !== $row['trigger_type'] || ! $row['scheduled_at'] || strtotime( $row['scheduled_at'] . ' UTC' ) < time() ) {
                     $data['scheduled_at'] = 'queue' === $row['trigger_type'] ? null : self::now_utc();
+                }
+                if ( 'queue' === $row['trigger_type'] ) {
+                    $data['position'] = $this->next_position(); // After everything queued meanwhile.
                 }
                 $this->update_row( $row['id'], $data );
             }
