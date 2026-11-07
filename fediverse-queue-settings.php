@@ -90,7 +90,7 @@ function fediverse_render_connection_mastodon( Fediverse_Network_Mastodon $netwo
             <?php if ( $network->uses_constants() ) : ?>
                 <p class="description"><?php echo wp_kses( __( 'Set in <code>wp-config.php</code> (FEDIVERSE_POSTING_INSTANCE / FEDIVERSE_POSTING_TOKEN). Change it there.', 'wp-fediverse-posting' ), array( 'code' => array() ) ); ?></p>
             <?php else : ?>
-                <form method="post" action="<?php echo esc_url( $post_to ); ?>">
+                <form method="post" action="<?php echo esc_url( $post_to ); ?>" data-fedi-confirm="<?php esc_attr_e( 'Disconnect this account? Queued posts for it will fail until you connect again.', 'wp-fediverse-posting' ); ?>">
                     <input type="hidden" name="action" value="fediverse_disconnect">
                     <?php wp_nonce_field( 'fediverse_disconnect' ); ?>
                     <button type="submit" class="button"><?php esc_html_e( 'Disconnect', 'wp-fediverse-posting' ); ?></button>
@@ -144,7 +144,7 @@ function fediverse_render_connection_bluesky( Fediverse_Network_Bluesky $network
             <?php if ( $network->uses_constants() ) : ?>
                 <p class="description"><?php echo wp_kses( __( 'Set in <code>wp-config.php</code> (FEDIVERSE_POSTING_BLUESKY_HANDLE / FEDIVERSE_POSTING_BLUESKY_APP_PASSWORD). Change it there.', 'wp-fediverse-posting' ), array( 'code' => array() ) ); ?></p>
             <?php else : ?>
-                <form method="post" action="<?php echo esc_url( $post_to ); ?>">
+                <form method="post" action="<?php echo esc_url( $post_to ); ?>" data-fedi-confirm="<?php esc_attr_e( 'Disconnect this account? Queued posts for it will fail until you connect again.', 'wp-fediverse-posting' ); ?>">
                     <input type="hidden" name="action" value="fediverse_bluesky_disconnect">
                     <?php wp_nonce_field( 'fediverse_bluesky_disconnect' ); ?>
                     <button type="submit" class="button"><?php esc_html_e( 'Disconnect', 'wp-fediverse-posting' ); ?></button>
@@ -405,7 +405,7 @@ function fediverse_render_row( Fediverse_Queue $queue, $row, $context ) {
     }
     ?>
     <tr class="<?php echo esc_attr( implode( ' ', $classes ) ); ?>" data-id="<?php echo esc_attr( $row['id'] ); ?>">
-        <td class="fedi-col-handle"><?php if ( $sortable ) : ?><span class="dashicons dashicons-menu fedi-handle" aria-hidden="true"></span><?php elseif ( 'at' === $row['trigger_type'] && in_array( $row['status'], array( 'scheduled', 'paused' ), true ) ) : ?><span class="dashicons dashicons-admin-post fedi-pin" title="<?php esc_attr_e( 'Fixed date and time: not moved by the queue', 'wp-fediverse-posting' ); ?>"></span><?php endif; ?></td>
+        <td class="fedi-col-handle"><?php if ( $sortable ) : ?><button type="button" class="fedi-handle" aria-label="<?php esc_attr_e( 'Move: drag, or press Up or Down', 'wp-fediverse-posting' ); ?>"><span class="dashicons dashicons-menu" aria-hidden="true"></span></button><?php elseif ( 'at' === $row['trigger_type'] && in_array( $row['status'], array( 'scheduled', 'paused' ), true ) ) : ?><span class="dashicons dashicons-admin-post fedi-pin" title="<?php esc_attr_e( 'Fixed date and time: not moved by the queue', 'wp-fediverse-posting' ); ?>"></span><?php endif; ?></td>
         <td class="fedi-col-when"><?php echo esc_html( fediverse_when_text( $row ) ); ?></td>
         <td class="fedi-col-post">
             <div class="fedi-row__body">
@@ -423,7 +423,7 @@ function fediverse_render_row( Fediverse_Queue $queue, $row, $context ) {
                             <?php elseif ( $row['post_id'] ) : ?>
                                 <span class="fedi-muted"><?php /* translators: %d: post ID */ echo esc_html( sprintf( __( 'Post #%d (deleted)', 'wp-fediverse-posting' ), $row['post_id'] ) ); ?></span>
                             <?php else : ?>
-                                <span class="fedi-muted"><?php esc_html_e( 'No WordPress post', 'wp-fediverse-posting' ); ?></span>
+                                <span class="fedi-muted"><?php esc_html_e( 'Posted from the planner', 'wp-fediverse-posting' ); ?></span>
                             <?php endif; ?>
                         </div>
                     <?php endif; ?>
