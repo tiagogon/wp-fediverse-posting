@@ -466,7 +466,7 @@ trait Fediverse_Settings_Page_Trait {
             <hr>
             <h2><?php esc_html_e( 'Debug log', 'wp-fediverse-posting' ); ?></h2>
             <textarea readonly rows="12" class="large-text code fedi-log"><?php echo esc_textarea( $this->read_log_tail( 100 ) ); ?></textarea>
-            <p><button type="button" class="button" data-fedi-clear-log data-nonce="<?php echo esc_attr( wp_create_nonce( 'fediverse_clear_log' ) ); ?>"><?php esc_html_e( 'Clear log', 'wp-fediverse-posting' ); ?></button></p>
+            <p><button type="button" class="button" data-fedi-clear-log data-nonce="<?php echo esc_attr( wp_create_nonce( 'fediverse_clear_log' ) ); ?>"><?php esc_html_e( 'Clear log', 'wp-fediverse-posting' ); ?></button> <span class="fedi-muted fedi-log-status" role="status" aria-live="polite"></span></p>
 
             <hr>
             <?php include FEDIVERSE_POSTING_DIR . 'setup-guide.php'; ?>
@@ -620,6 +620,9 @@ trait Fediverse_Settings_Page_Trait {
                 'remove'        => __( 'Remove', 'wp-fediverse-posting' ),
                 'confirmDelete' => __( 'Remove this fediverse post?', 'wp-fediverse-posting' ),
                 'confirmForget' => __( 'Remove this entry from the list? The post stays on the fediverse.', 'wp-fediverse-posting' ),
+                'confirmClearLog' => __( 'Clear the log? This cannot be undone.', 'wp-fediverse-posting' ),
+                'logCleared'      => __( 'Log cleared.', 'wp-fediverse-posting' ),
+                'logClearFailed'  => __( 'Could not clear the log.', 'wp-fediverse-posting' ),
                 'confirmRemote' => __( 'Delete this post on the fediverse? This cannot be undone.', 'wp-fediverse-posting' ),
                 'nextSlot'      => __( 'Next slot:', 'wp-fediverse-posting' ),
                 'noSlots'       => __( 'No time slots yet: add them under Fediverse → Planner.', 'wp-fediverse-posting' ),

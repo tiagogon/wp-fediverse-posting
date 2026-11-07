@@ -108,9 +108,29 @@
 
     $( document ).on( 'click', '[data-fedi-clear-log]', function () {
         var $btn = $( this );
-        $.post( C.ajaxUrl, { action: 'fediverse_clear_log', nonce: $btn.data( 'nonce' ) } ).done( function () {
+        var $status = $btn.siblings( '.fedi-log-status' );
+        if ( ! window.confirm( T.confirmClearLog ) ) {
+            return;
+        }
+        $status.text( '' );
+        $.post( C.ajaxUrl, { action: 'fediverse_clear_log', nonce: $btn.data( 'nonce' ) } ).done( function ( res ) {
+            if ( res && res.success === false ) {
+                $status.text( T.logClearFailed );
+                return;
+            }
             $( '.fedi-log' ).val( '' );
+            $status.text( T.logCleared );
+        } ).fail( function () {
+            $status.text( T.logClearFailed );
         } );
+    } );
+
+    // ── Forms that ask first (Disconnect) ──────────────────────────────────
+
+    $( document ).on( 'submit', 'form[data-fedi-confirm]', function ( e ) {
+        if ( ! window.confirm( $( this ).data( 'fedi-confirm' ) ) ) {
+            e.preventDefault();
+        }
     } );
 
     // ── Boxes (editor meta box, Planner) ───────────────────────────────────
@@ -303,6 +323,8 @@
 
         this.$composer.find( '.fedi-images' ).empty();
         this.$composer.find( '.fedi-composer__msg' ).text( '' );
+        // Whatever opened the composer gets focus back when it closes.
+        this.returnFocus = document.activeElement;
         this.$composer.prop( 'hidden', false );
         this.$el.find( '[data-fedi-action="compose"]' ).closest( 'p' ).prop( 'hidden', true );
         this.syncUi();
@@ -317,6 +339,11 @@
         this.$composer.prop( 'hidden', true );
         this.$el.find( '[data-fedi-action="compose"]' ).closest( 'p' ).prop( 'hidden', false );
         this.state = null;
+        var back = this.returnFocus;
+        this.returnFocus = null;
+        if ( back && back.focus && document.body.contains( back ) && ! back.hidden ) {
+            back.focus();
+        }
     };
 
     /** Show/hide parts that depend on content type and "When". */
@@ -682,6 +709,10 @@
         if ( data.html !== undefined ) {
             this.$el.find( '.fedi-list' ).html( data.html );
             this.initSortable();
+            if ( this.refocusHandle ) {
+                this.$el.find( '.fedi-upcoming tr[data-id="' + this.refocusHandle + '"] .fedi-handle' ).trigger( 'focus' );
+                this.refocusHandle = null;
+            }
         }
         if ( data.next_slot !== undefined ) {
             this.$el.attr( 'data-next-slot', data.next_slot );
@@ -716,7 +747,48 @@
 
     Box.prototype.initSortable = function () {
         var self = this;
-        if ( this.context !== 'planner' || ! $.fn.sortable ) {
+        if ( this.context !== 'planner' ) {
+            return;
+        }
+
+        function sendOrder() {
+            var ids = self.$el.find( '.fedi-upcoming tr.fedi-row--sortable' ).map( function () {
+                return $( this ).data( 'id' );
+            } ).get();
+            request( self, 'reorder', { ids: ids } ).done( function ( res ) {
+                if ( res && res.success ) {
+                    self.applyList( res.data );
+                }
+            } );
+        }
+
+        // Keyboard: Up/Down on a focused handle moves the row one slot; the
+        // handle keeps focus across the re-render by its row id. Delegated
+        // and bound once: initSortable runs again after every re-render.
+        if ( ! this.keysBound ) {
+            this.keysBound = true;
+            this.$el.on( 'keydown', '.fedi-upcoming .fedi-handle', function ( e ) {
+                if ( e.key !== 'ArrowUp' && e.key !== 'ArrowDown' ) {
+                    return;
+                }
+                e.preventDefault();
+                var $row = $( this ).closest( 'tr.fedi-row--sortable' );
+                var $other = e.key === 'ArrowUp' ? $row.prevAll( 'tr.fedi-row--sortable' ).first() : $row.nextAll( 'tr.fedi-row--sortable' ).first();
+                if ( ! $other.length ) {
+                    return;
+                }
+                if ( e.key === 'ArrowUp' ) {
+                    $row.insertBefore( $other );
+                } else {
+                    $row.insertAfter( $other );
+                }
+                self.refocusHandle = $row.data( 'id' );
+                sendOrder();
+                $row.find( '.fedi-handle' ).trigger( 'focus' );
+            } );
+        }
+
+        if ( ! $.fn.sortable ) {
             return;
         }
         this.$el.find( '.fedi-upcoming' ).sortable( {
@@ -731,16 +803,7 @@
                 } );
                 return $h;
             },
-            update: function () {
-                var ids = self.$el.find( '.fedi-upcoming tr.fedi-row--sortable' ).map( function () {
-                    return $( this ).data( 'id' );
-                } ).get();
-                request( self, 'reorder', { ids: ids } ).done( function ( res ) {
-                    if ( res && res.success ) {
-                        self.applyList( res.data );
-                    }
-                } );
-            }
+            update: sendOrder
         } );
     };
 
